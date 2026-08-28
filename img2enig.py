@@ -476,7 +476,7 @@ def build_project(
                 "zIndex": primitive_count,
                 "polyType": "NORMAL",
             },
-            "e1",
+            f"e{primitive_count}",
         )
 
     writer.record(
