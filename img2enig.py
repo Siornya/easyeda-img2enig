@@ -175,7 +175,10 @@ def read_binary_image(path: str | Path, width_mm: float, height_mm: float | None
 
     height_px, width_px = gray.shape
     physical_height = height_mm or width_mm * height_px / width_px
-    rectangles = active_rectangles(gray == 0)
+    # Raster images use a top-left origin with Y increasing downwards, while
+    # EasyEDA PCB coordinates increase upwards. Flip only the Y axis so the
+    # generated artwork keeps its original left/right orientation.
+    rectangles = active_rectangles(np.flipud(gray == 0))
     if not rectangles:
         raise ValueError("Input contains no black pixels to convert")
     return PreparedImage(
