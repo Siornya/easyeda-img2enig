@@ -1,6 +1,6 @@
-# easyeda-img2enig
+# img2enig
 
-`easyeda-img2enig.py` 将已经处理好的纯黑白图片转换成嘉立创 EDA 专业版沉金图案工程。
+`img2enig.py` 将已经处理好的纯黑白图片转换成嘉立创 EDA 专业版沉金图案工程。
 
 它只负责生成沉金制造图层，不负责图片二值化、降噪、阈值、反色、镜像、丝印或图形
 界面。原始图片应先由图片处理项目输出为只包含黑色和白色像素的图片。
@@ -10,10 +10,11 @@
 程序将黑色区域视为需要露金的完整面积：
 
 1. 读取纯黑白图片。
-2. 将连续的黑色像素无损合并成填充矩形。
-3. 在顶层或底层铜层生成实心 `FILL` 图形。
-4. 在对应阻焊层生成相同图形，形成阻焊开窗。
-5. 制板下单时选择沉金表面处理，使开窗处的铜面形成金色表面。
+2. 将图片向下的 Y 轴转换为 PCB 向上的 Y 轴，保持左右方向不变。
+3. 将连续的黑色像素无损合并成填充矩形。
+4. 在顶层或底层铜层生成实心 `FILL` 图形。
+5. 在对应阻焊层生成相同图形，形成阻焊开窗。
+6. 制板下单时选择沉金表面处理，使开窗处的铜面形成金色表面。
 
 黑色区域会完整填充，不是只绘制边缘轮廓。白色区域不会生成铜箔或阻焊开窗。
 
@@ -32,7 +33,7 @@ python3 -m pip install -r requirements.txt
 ## 基本用法
 
 ```bash
-python3 easyeda-img2enig.py 已二值化图片.png
+python3 img2enig.py 已二值化图片.png
 ```
 
 默认行为：
@@ -47,7 +48,7 @@ python3 easyeda-img2enig.py 已二值化图片.png
 ## 指定输出和尺寸
 
 ```bash
-python3 easyeda-img2enig.py 已二值化图片.png \
+python3 img2enig.py 已二值化图片.png \
     -o 沉金图案.epro2 \
     --width-mm 40
 ```
@@ -55,7 +56,7 @@ python3 easyeda-img2enig.py 已二值化图片.png \
 如需强制指定高度：
 
 ```bash
-python3 easyeda-img2enig.py 已二值化图片.png \
+python3 img2enig.py 已二值化图片.png \
     -o 沉金图案.epro2 \
     --width-mm 40 \
     --height-mm 30
@@ -66,7 +67,7 @@ python3 easyeda-img2enig.py 已二值化图片.png \
 顶面沉金：
 
 ```bash
-python3 easyeda-img2enig.py 已二值化图片.png --side top
+python3 img2enig.py 已二值化图片.png --side top
 ```
 
 生成的填充图层为：
@@ -77,7 +78,7 @@ python3 easyeda-img2enig.py 已二值化图片.png --side top
 底面沉金：
 
 ```bash
-python3 easyeda-img2enig.py 已二值化图片.png --side bottom
+python3 img2enig.py 已二值化图片.png --side bottom
 ```
 
 生成的填充图层为：
@@ -90,19 +91,19 @@ python3 easyeda-img2enig.py 已二值化图片.png --side bottom
 设置图案与板框之间的留白：
 
 ```bash
-python3 easyeda-img2enig.py 已二值化图片.png --margin-mm 2
+python3 img2enig.py 已二值化图片.png --margin-mm 2
 ```
 
 不生成板框：
 
 ```bash
-python3 easyeda-img2enig.py 已二值化图片.png --no-outline
+python3 img2enig.py 已二值化图片.png --no-outline
 ```
 
 ## 检查工程
 
 ```bash
-python3 easyeda-img2enig.py 沉金图案.epro2 --inspect
+python3 img2enig.py 沉金图案.epro2 --inspect
 ```
 
 检查结果会列出工程文档、记录数量和实际 `FILL` 图层。顶面应为 `[1, 5]`，底面应为
@@ -136,11 +137,11 @@ python3 easyeda-img2enig.py 沉金图案.epro2 --inspect
 ## 完整示例
 
 ```bash
-python3 easyeda-img2enig.py img/1.转化后.png \
+python3 img2enig.py 已二值化图片.png \
     -o output.epro2 \
     --side top \
     --width-mm 40 \
     --margin-mm 1
 
-python3 easyeda-img2enig.py output.epro2 --inspect
+python3 img2enig.py output.epro2 --inspect
 ```
