@@ -35,3 +35,8 @@ dist/
 *.swp
 *.swo
 *~
+
+# Local native build tools and dependencies
+.native-tools/
+.native-deps/
+build-native/

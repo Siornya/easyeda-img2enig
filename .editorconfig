@@ -1,0 +1,12 @@
+root = true
+
+[*.{cpp,hpp,qml,cmake}]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+insert_final_newline = true
+
+[CMakeLists.txt]
+indent_style = tab
+indent_size = 4
+tab_width = 4
