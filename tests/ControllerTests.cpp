@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
 		{
 			QQmlApplicationEngine engine;
 			engine.rootContext()->setContextProperty("controller", &controller);
-			engine.load(QUrl::fromLocalFile(QStringLiteral(BINARIZER_SOURCE_DIR "/native/qml/Main.qml")));
+			engine.load(QUrl::fromLocalFile(QStringLiteral(BINARIZER_SOURCE_DIR "/qml/Main.qml")));
 			check(!engine.rootObjects().isEmpty(), "Main QML scene failed to load");
 			check(QMetaObject::invokeMethod(engine.rootObjects().front(), "setLayerMaterial",
 				Q_ARG(QVariant, QVariant(0)), Q_ARG(QVariant, QVariant(1))),

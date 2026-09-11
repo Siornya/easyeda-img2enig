@@ -2,244 +2,121 @@
 
 将普通图片处理为沉金图案或保留原色的彩色丝印，再转换成可导入嘉立创EDA专业版的 PCB 图案工程。
 
-项目包含两个相互独立的步骤：
+桌面应用使用 C++20、Qt 6 Quick/QML 和 OpenCV C++。旧版 Python 界面和二值化实现已经移除；`img2enig.py` 作为独立 PCB 导出器继续使用。
 
-1. `image_binarizer.py` / `main.py` 负责图片预处理和二值化。
-2. `img2enig.py` 负责把纯黑白图片转换成 `.epro2`。
+## 功能
 
-分开运行可以先确认黑白图效果，再处理 PCB 文件格式和物理尺寸。
-
-## C++ / Qt Quick 新版
-
-已开始逐步重构。C++ 新版已实现 Try All、多图片图层、沉金/丝印类型选择和合成导出；旧版 Python 界面和 PCB 导出器保持可用。
-构建、运行和迁移范围见 [新版说明](native/README.md)。
+- 管理多张图片图层，调整位置、显示状态和叠放顺序。
+- 每个图层可选择沉金或彩色丝印。
+- 提供 7 种阈值方法和 Try All 多方案比较。
+- 调整曝光、对比度、伽马、降噪、锐化和局部增强等参数。
+- 根据图片 DPI 自动计算 PCB 物理尺寸；没有可靠 DPI 时使用 50 mm 默认宽度。
+- 选择绿、红、黄、蓝、白或雅黑阻焊并导出 `.epro2`。
 
 ## 项目结构
 
-- `image_binarizer.py`：图片处理核心、Python API 和命令行入口。
-- `main.py`：PyQt5 图形界面。
-- `img2enig.py`：黑白图片到沉金 PCB 工程转换器。
-- `build.py`：PyInstaller GUI 打包脚本。
-- `tests/`：二值化和沉金转换测试。
+- `core/`：C++/OpenCV 图片处理核心。
+- `app/`：Qt 后台任务、图层管理和 PCB 导出调用。
+- `qml/`：Qt Quick 界面。
+- `img2enig.py`：把沉金掩膜和彩色丝印转换成 `.epro2`。
+- `tests/`：C++ 算法、控制器和 Python PCB 导出器测试。
 
-## 安装
+## 启动桌面应用
 
-建议使用 Python 3.9 或更高版本。
+当前机器已在项目目录准备好依赖，可以直接运行：
 
-以下是虚拟环境安装步骤：
+```sh
+./run-local.sh
+```
 
-```bash
+也可以在启动时添加一张图片：
+
+```sh
+./run-local.sh --input /absolute/path/to/image.png
+```
+
+## 构建
+
+依赖 CMake 3.21 以上、支持 C++20 的编译器、Qt 6.5 以上（Quick、QuickControls2、Concurrent），以及 OpenCV 4（core、imgproc、photo）。TIFF、WebP 等格式还需要 Qt 对应的图片插件。
+
+```sh
+cmake -S . -B build-native -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH="/path/to/Qt/6.x;/path/to/opencv"
+cmake --build build-native --parallel
+ctest --test-dir build-native --output-on-failure
+./build-native/bin/binarizer
+```
+
+使用 `-DBUILD_GUI=OFF` 可以只构建不依赖 Qt 的图片处理核心和测试。
+
+## Python 导出环境
+
+桌面应用只在生成 PCB 文件时调用 Python 导出器。创建虚拟环境并安装导出依赖：
+
+```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-## 图形界面
+程序会优先使用项目中的 `.venv`。也可以通过 `IMAGE_BINARIZER_PYTHON` 指定其他 Python 解释器。
 
-```bash
-.venv/bin/python main.py
+## 使用桌面应用
+
+1. 在右侧点击“添加图层”，选择一张或多张图片。
+2. 为沉金图层调整二值化参数，或点击 Try All 比较全部算法。
+3. 设置各图层的位置、类型、显示状态和叠放顺序。
+4. 选择阻焊颜色和输出目录。
+5. 保存黑白图片，或生成包含所有可见图层的 PCB 文件。
+
+## 单独使用 PCB 导出器
+
+`img2enig.py` 的沉金和传统单色丝印输入必须是像素值为 `0` 或 `255` 的纯黑白图片。彩色丝印输入会保留原始 RGBA 颜色和透明区域。
+
+导出沉金图案：
+
+```sh
+.venv/bin/python img2enig.py input.binary.png -o output.epro2
 ```
 
-界面支持：
+指定尺寸和板边：
 
-- 文件选择和拖放；
-- 参数变化后的实时预览；
-- “查看原图 / 查看处理结果”切换；
-- 固定、自适应、Otsu、Sauvola、Wolf、Nick 和 Bernsen 阈值；
-- 高斯、中值、双边和 NLMeans 降噪；
-- 曝光、对比度、伽马、平滑、锐化和局部增强；
-- 反相、水平翻转和垂直翻转；
-- 统一设置黑白图片和 PCB 工程的输出路径；
-- 保存纯黑白 PNG；
-- 使用当前处理结果直接生成 `.epro2` PCB 文件。
-
-切换到原图时，参数变化仍会生效。
-
-选择输入图片后，“输出路径”默认设为原图所在目录，也可以手动选择其他目录。输出内容为：
-
-- `原文件名.binary.png`
-- `原文件名.epro2`
-
-“生成PCB文件”也始终使用最新的二值化结果。GUI 直接生成时使用默认参数：
-50 mm 图案宽度、保持比例、顶面、1 mm 板边和自动板框。需要底面或其他尺寸时请使用 `img2enig.py` 命令行。
-
-## 二值化命令行
-
-默认使用自适应阈值，在原图旁生成 `input.binary.png`：
-
-```bash
-.venv/bin/python image_binarizer.py input.png
-```
-
-指定输出和阈值方法：
-
-```bash
-.venv/bin/python image_binarizer.py input.png \
-    -o output.png \
-    --method sauvola \
-    --block-size 31
-```
-
-常用参数：
-
-```text
---method fixed|adaptive|otsu|sauvola|wolf|nick|bernsen
---threshold 0..255
---denoise 0..100
---denoise-method gaussian|median|bilateral|nlmeans
---exposure -100..100
---contrast -100..100
---gamma 大于 0
---smooth 0..100
---sharpen 0..100
---equalize
---clahe
---invert
---flip-horizontal
---flip-vertical
---max-dimension 3840
-```
-
-默认会把超过 3840 像素的图片按比例缩小。使用 `--max-dimension 0` 可保留原始分辨率，但高分辨率会显著增加后续 PCB 图元数量。
-
-因为 JPEG 会引入灰色压缩噪点，输出只允许 PNG、BMP 或 TIFF。
-
-## 作为 Python 模块调用
-
-```python
-from image_binarizer import (
-    BinarizationOptions,
-    ThresholdMethod,
-    binarize_file,
-)
-
-options = BinarizationOptions(
-    threshold_method=ThresholdMethod.OTSU,
-    denoise_strength=10,
-)
-binarize_file("input.png", "output.png", options)
-```
-
-## 生成沉金 PCB 工程
-
-`img2enig.py` 的沉金和传统丝印输入只接受像素值为 `0` 或 `255` 的纯黑白图片。默认情况下黑色区域代表需要露金的完整面积；使用 `--source-type silk` 时黑色区域代表传统单色丝印。使用 `--source-type color-silk` 或 `--color-silk` 时，丝印图片会按原始 RGBA 颜色嵌入工程。
-
-转换过程：
-
-1. 将图片向下的 Y 轴转换为 PCB 向上的 Y 轴，同时保持左右方向不变；
-2. 将连续黑色像素无损合并为填充矩形；
-3. 将沉金掩膜写入顶层或底层铜层，并在对应阻焊层生成完全重合的开窗；
-4. 将可选黑白丝印掩膜或原色 PNG 写入顶层或底层丝印层；
-5. 生成矩形板框并封装为 `.epro2`。
-
-基本用法：
-
-```bash
-.venv/bin/python img2enig.py input.binary.png
-```
-
-默认设置：
-
-- 图案宽度 50 mm；
-- 高度保持原图宽高比；
-- 顶面沉金；
-- 四周 1 mm 板边；
-- 自动生成板框；
-- 在输入图片旁生成同名 `.epro2`。
-
-指定尺寸和输出：
-
-```bash
+```sh
 .venv/bin/python img2enig.py input.binary.png \
     -o output.epro2 \
-    --width-mm 40
-```
-
-指定 `--height-mm` 会强制使用给定高度，可能改变原图比例：
-
-```bash
-.venv/bin/python img2enig.py input.binary.png \
     --width-mm 40 \
-    --height-mm 30
+    --margin-mm 2
 ```
 
-选择板面：
+导出彩色丝印并设置阻焊颜色：
 
-```bash
-.venv/bin/python img2enig.py input.binary.png --side top
-.venv/bin/python img2enig.py input.binary.png --side bottom
-```
-
-- 顶面使用顶层铜 `1` 和顶层阻焊 `5`；
-- 底面使用底层铜 `2` 和底层阻焊 `6`。
-
-将主图片作为丝印，或为沉金图片增加一张同尺寸的丝印掩膜：
-
-```bash
-.venv/bin/python img2enig.py silk.binary.png --source-type silk
-.venv/bin/python img2enig.py enig.binary.png --silk silk.binary.png
-```
-
-彩色丝印会保留原图颜色和透明区域。也可以用 `--solder-mask-color` 设置工程中的阻焊颜色：
-
-```bash
-.venv/bin/python img2enig.py silk.png --source-type color-silk \
+```sh
+.venv/bin/python img2enig.py silk.png \
+    --source-type color-silk \
     --solder-mask-color '#164D73'
-.venv/bin/python img2enig.py enig.binary.png --color-silk silk.png \
-    --solder-mask-color '#191B1D'
 ```
 
-- 顶面丝印使用 Layer `3`；
-- 底面丝印使用 Layer `4`；
-- `--silk` 图片必须与主图片像素尺寸一致。
+为沉金图案添加彩色丝印：
 
-设置板边或取消板框：
-
-```bash
-.venv/bin/python img2enig.py input.binary.png --margin-mm 2
-.venv/bin/python img2enig.py input.binary.png --no-outline
+```sh
+.venv/bin/python img2enig.py enig.binary.png \
+    --color-silk silk.png \
+    --solder-mask-color '#191B1D'
 ```
 
 检查生成的工程：
 
-```bash
+```sh
 .venv/bin/python img2enig.py output.epro2 --inspect
 ```
 
-`.epro2` 内含 `project2.json`，以及一个包含 `BOARD`、`PCB`、`CONFIG` 文档的 `.epru`
-日志。当前不生成 SQLite 格式的 `.eprj2`。
-
-## 完整流程
-
-```bash
-.venv/bin/python image_binarizer.py input.png \
-    -o input.binary.png \
-    --method otsu
-
-.venv/bin/python img2enig.py input.binary.png \
-    -o input.epro2 \
-    --side top \
-    --width-mm 40 \
-    --margin-mm 1
-
-.venv/bin/python img2enig.py input.epro2 --inspect
-```
-
-## 制造注意事项
-
-- 沉金不是彩色打印，而是阻焊开窗处的裸露铜面经过化学镍金处理。
-- PCB 下单时必须选择沉金表面处理。
-- 当前铜图形和阻焊开窗尺寸完全相同；生产前应结合板厂能力检查阻焊偏位。
-- 过小的孤立区域、线宽和间距可能低于制造能力。
-- 下单前应在嘉立创EDA中检查铜层、阻焊层、DRC、2D/3D 和 Gerber 预览。
+`.epro2` 内含 `project2.json`，以及包含 `BOARD`、`PCB`、`CONFIG` 文档的 `.epru` 日志。当前不生成 SQLite 格式的 `.eprj2`。
 
 ## 测试
 
-```bash
-.venv/bin/python -m unittest discover -s tests -v
+```sh
+cmake --build build-native --parallel
+ctest --test-dir build-native --output-on-failure
+.venv/bin/python -m unittest tests.test_img2enig -v
 ```
 
-## 打包 GUI
-
-```bash
-.venv/bin/python build.py
-```
+生产前应在嘉立创EDA中检查铜层、阻焊层、DRC、2D/3D 和 Gerber 预览，并确认最小线宽、间距和阻焊偏位符合板厂要求。

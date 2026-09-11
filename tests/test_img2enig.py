@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 import cv2
 
-from image_binarizer import write_image
 from img2enig import (
     PixelRectangle,
     build_project,
@@ -17,6 +16,13 @@ from img2enig import (
     parse_log_line,
     read_binary_image,
 )
+
+
+def write_image(path: Path, image: np.ndarray) -> None:
+    success, encoded = cv2.imencode(path.suffix, image)
+    if not success:
+        raise ValueError(f"Cannot encode test image: {path}")
+    path.write_bytes(encoded.tobytes())
 
 
 class Img2EnigTests(unittest.TestCase):
