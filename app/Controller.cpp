@@ -1,7 +1,11 @@
 #include "Controller.hpp"
+#include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QImageReader>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMutexLocker>
 #include <QPainter>
 #include <QProcess>
@@ -443,50 +447,6 @@ QSize Controller::canvasSize() const {
 	return {width, height};
 }
 
-QImage Controller::materialMask(const QString& type, bool* hasArtwork) const {
-	const QSize canvas = canvasSize();
-	const int width = canvas.width();
-	const int height = canvas.height();
-	if (hasArtwork) *hasArtwork = false;
-	if (width == 0 || height == 0) return {};
-	QImage mask(width, height, QImage::Format_Grayscale8);
-	mask.fill(255);
-	for (auto iterator = artworkLayers.crbegin(); iterator != artworkLayers.crend(); ++iterator) {
-		const auto& layer = *iterator;
-		if (!layer.visible || layer.type != type || layer.outputImage.isNull()) continue;
-		const QImage source = layer.outputImage.convertToFormat(QImage::Format_Grayscale8);
-		const int offsetX = qRound(layer.x);
-		const int offsetY = qRound(layer.y);
-		for (int y = 0; y < source.height() && y + offsetY < height; ++y) {
-			const uchar* sourceLine = source.constScanLine(y);
-			uchar* destinationLine = mask.scanLine(y + offsetY) + offsetX;
-			for (int x = 0; x < source.width() && x + offsetX < width; ++x) {
-				if (sourceLine[x] < 128) {
-					destinationLine[x] = 0;
-					if (hasArtwork) *hasArtwork = true;
-				}
-			}
-		}
-	}
-	return mask;
-}
-
-QImage Controller::colorSilkImage(bool* hasArtwork) const {
-	const QSize canvas = canvasSize();
-	if (hasArtwork) *hasArtwork = false;
-	if (canvas.isEmpty()) return {};
-	QImage image(canvas, QImage::Format_ARGB32_Premultiplied);
-	image.fill(Qt::transparent);
-	QPainter painter(&image);
-	for (auto iterator = artworkLayers.crbegin(); iterator != artworkLayers.crend(); ++iterator) {
-		const auto& layer = *iterator;
-		if (!layer.visible || layer.type != QStringLiteral("silk") || layer.originalImage.isNull()) continue;
-		painter.drawImage(QPointF(layer.x, layer.y), layer.originalImage);
-		if (hasArtwork) *hasArtwork = true;
-	}
-	return image;
-}
-
 void Controller::refreshLayerPresentation() {
 	++revision;
 	layerItems.clear();
@@ -639,26 +599,28 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 		emit changed();
 		return;
 	}
-	bool hasEnig = false;
-	bool hasSilk = false;
-	const QImage enigMask = materialMask(QStringLiteral("enig"), &hasEnig);
-	const QImage silkImage = colorSilkImage(&hasSilk);
-	const QString enigPath = QDir(pcbTemporaryDirectory->path()).filePath(QStringLiteral("enig.png"));
-	const QString silkPath = QDir(pcbTemporaryDirectory->path()).filePath(QStringLiteral("silk-color.png"));
-	if ((hasEnig && !enigMask.save(enigPath, "PNG")) || (hasSilk && !silkImage.save(silkPath, "PNG"))) {
-		message = QStringLiteral("无法写入 PCB 导出临时图层");
-		pcbTemporaryDirectory.reset();
-		emit changed();
-		return;
-	}
 	pcbDestination = outputDirectory.filePath(sourceFile.completeBaseName() + QStringLiteral(".epro2"));
 	pcbCancelled = false;
-	const QString primaryPath = hasEnig ? enigPath : silkPath;
-	QStringList arguments{script, primaryPath, QStringLiteral("-o"), pcbDestination,
-		QStringLiteral("--project-name"), sourceFile.completeBaseName(),
-		QStringLiteral("--solder-mask-color"), solderMaskExportColor(maskColor)};
-	if (!hasEnig) arguments.append({QStringLiteral("--source-type"), QStringLiteral("color-silk")});
-	if (hasEnig && hasSilk) arguments.append({QStringLiteral("--color-silk"), silkPath});
+	const QSize canvas = canvasSize();
+	QJsonArray exportedLayers;
+	for (int index = 0; index < int(artworkLayers.size()); ++index) {
+		const auto& layer = artworkLayers[index];
+		if (!layer.visible) continue;
+		const QImage& image = layer.type == QStringLiteral("silk")
+			? layer.originalImage : layer.outputImage;
+		if (image.isNull()) continue;
+		const QString path = QDir(pcbTemporaryDirectory->path())
+			.filePath(QStringLiteral("layer-%1.png").arg(index));
+		if (!image.save(path, "PNG")) {
+			message = QStringLiteral("无法写入 PCB 导出临时图层");
+			pcbTemporaryDirectory.reset();
+			emit changed();
+			return;
+		}
+		exportedLayers.append(QJsonObject{{QStringLiteral("source"), path},
+			{QStringLiteral("type"), layer.type}, {QStringLiteral("x"), layer.x},
+			{QStringLiteral("y"), layer.y}});
+	}
 	const ArtworkLayer* resolutionLayer = nullptr;
 	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size())
 		&& artworkLayers[selectedLayer].visible && artworkLayers[selectedLayer].hasPhysicalResolution)
@@ -671,18 +633,37 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 				break;
 			}
 	}
-	const QImage& boardMask = hasEnig ? enigMask : silkImage;
+	QJsonObject canvasSettings{{QStringLiteral("width"), canvas.width()},
+		{QStringLiteral("height"), canvas.height()}};
 	if (resolutionLayer) {
-		const double widthMm = boardMask.width() * 1000.0 / resolutionLayer->dotsPerMeterX;
-		const double heightMm = boardMask.height() * 1000.0 / resolutionLayer->dotsPerMeterY;
-		arguments.append({QStringLiteral("--width-mm"), QString::number(widthMm, 'f', 6),
-			QStringLiteral("--height-mm"), QString::number(heightMm, 'f', 6)});
+		const double widthMm = canvas.width() * 1000.0 / resolutionLayer->dotsPerMeterX;
+		const double heightMm = canvas.height() * 1000.0 / resolutionLayer->dotsPerMeterY;
+		canvasSettings.insert(QStringLiteral("widthMm"), widthMm);
+		canvasSettings.insert(QStringLiteral("heightMm"), heightMm);
 		pcbDimensionMessage = QStringLiteral("按图片 DPI：图案 %1 × %2 mm，板框 %3 × %4 mm")
 			.arg(widthMm, 0, 'f', 2).arg(heightMm, 0, 'f', 2)
 			.arg(widthMm + 2.0, 0, 'f', 2).arg(heightMm + 2.0, 0, 'f', 2);
 	} else {
 		pcbDimensionMessage = QStringLiteral("未检测到可靠 DPI，图案宽度沿用 50 mm，板框四周各加 1 mm");
 	}
+	const QJsonObject manifestObject{
+		{QStringLiteral("canvas"), canvasSettings},
+		{QStringLiteral("projectName"), sourceFile.completeBaseName()},
+		{QStringLiteral("solderMaskColor"), solderMaskExportColor(maskColor)},
+		{QStringLiteral("layers"), exportedLayers}
+	};
+	const QString manifestPath = QDir(pcbTemporaryDirectory->path()).filePath(QStringLiteral("layers.json"));
+	QFile manifest(manifestPath);
+	if (!manifest.open(QIODevice::WriteOnly)
+		|| manifest.write(QJsonDocument(manifestObject).toJson(QJsonDocument::Compact)) < 0) {
+		message = QStringLiteral("无法写入 PCB 导出图层清单");
+		pcbTemporaryDirectory.reset();
+		emit changed();
+		return;
+	}
+	manifest.close();
+	const QStringList arguments{script, QStringLiteral("--manifest"), manifestPath,
+		QStringLiteral("-o"), pcbDestination};
 	auto* process = new QProcess(this);
 	pcbProcess = process;
 	process->setProgram(python);

@@ -22,9 +22,7 @@ UNITS_PER_MM = 1.0 / 0.254
 EDITOR_VERSION = "3.2"
 LAYER_IDS = {
     "top-copper": 1,
-    "bottom-copper": 2,
     "top-silk": 3,
-    "bottom-silk": 4,
     "top-mask": 5,
     "bottom-mask": 6,
     "outline": 11,
@@ -78,22 +76,35 @@ class PixelRectangle:
 
 
 @dataclass(frozen=True)
-class PreparedImage:
-    width_mm: float
-    height_mm: float
-    pixel_width_mm: float
-    pixel_height_mm: float
+class BinaryImage:
+    width_px: int
+    height_px: int
     rectangles: list[PixelRectangle]
 
 
 @dataclass(frozen=True)
 class ColorSilkImage:
-    width_mm: float
-    height_mm: float
     width_px: int
     height_px: int
     file_name: str
     data_url: str
+
+
+@dataclass(frozen=True)
+class LayerSpec:
+    source: Path
+    kind: str
+    x: float
+    y: float
+
+
+@dataclass(frozen=True)
+class PositionedLayer:
+    kind: str
+    x: float
+    y: float
+    binary_image: BinaryImage | None = None
+    color_image: ColorSilkImage | None = None
 
 
 @dataclass(frozen=True)
@@ -152,81 +163,44 @@ class LogWriter:
         return "\n".join(self.lines) + "\n"
 
 
-def read_binary_image(
-    path: str | Path,
-    width_mm: float,
-    height_mm: float | None,
-) -> PreparedImage:
+def decode_image(path: str | Path) -> tuple[Path, np.ndarray]:
     source = Path(path)
     if not source.is_file():
         raise FileNotFoundError(f"Image does not exist: {source}")
-    if width_mm <= 0:
-        raise ValueError("width_mm must be greater than zero")
-    if height_mm is not None and height_mm <= 0:
-        raise ValueError("height_mm must be greater than zero")
-
     encoded = np.fromfile(source, dtype=np.uint8)
     image = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
     if image is None:
         raise ValueError(f"Unsupported or damaged image: {source}")
+    return source, image
 
-    if image.ndim == 2:
-        gray = image
-    else:
-        if image.shape[2] == 4:
-            color = image[:, :, :3].astype(np.float32)
-            alpha = image[:, :, 3:4].astype(np.float32) / 255.0
-            image = np.clip(
-                color * alpha + 255.0 * (1.0 - alpha),
-                0,
-                255,
-            ).astype(np.uint8)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    values = np.unique(gray)
+def read_binary_image(path: str | Path) -> BinaryImage:
+    source, image = decode_image(path)
+    if image.ndim != 2:
+        raise ValueError(
+            f"ENIG layer must be a C++-processed grayscale image: {source}"
+        )
+    values = np.unique(image)
     if not np.all(np.isin(values, (0, 255))):
         sample = ", ".join(str(int(value)) for value in values[:8])
         raise ValueError(
-            "Input must already be a pure black/white image. "
+            "ENIG layer must be a pure black/white image. "
             f"Found pixel values including: {sample}"
         )
-
-    height_px, width_px = gray.shape
-    physical_height = height_mm or width_mm * height_px / width_px
-    # Raster images use a top-left origin with Y increasing downwards, while
-    # EasyEDA PCB coordinates increase upwards. Flip only the Y axis so the
-    # generated artwork keeps its original left/right orientation.
-    rectangles = active_rectangles(np.flipud(gray == 0))
+    height_px, width_px = image.shape
+    rectangles = active_rectangles(np.flipud(image == 0))
     if not rectangles:
-        raise ValueError("Input contains no black pixels to convert")
-    return PreparedImage(
-        width_mm=width_mm,
-        height_mm=physical_height,
-        pixel_width_mm=width_mm / width_px,
-        pixel_height_mm=physical_height / height_px,
+        raise ValueError("ENIG layer contains no black pixels")
+    return BinaryImage(
+        width_px=width_px,
+        height_px=height_px,
         rectangles=rectangles,
     )
 
 
-def read_color_silk_image(
-    path: str | Path,
-    width_mm: float,
-    height_mm: float | None,
-) -> ColorSilkImage:
-    source = Path(path)
-    if not source.is_file():
-        raise FileNotFoundError(f"Image does not exist: {source}")
-    if width_mm <= 0:
-        raise ValueError("width_mm must be greater than zero")
-    if height_mm is not None and height_mm <= 0:
-        raise ValueError("height_mm must be greater than zero")
-
-    encoded = np.fromfile(source, dtype=np.uint8)
-    image = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
-    if image is None:
-        raise ValueError(f"Unsupported or damaged image: {source}")
+def read_color_silk_image(path: str | Path) -> ColorSilkImage:
+    source, image = decode_image(path)
     height_px, width_px = image.shape[:2]
-    physical_height = height_mm or width_mm * height_px / width_px
     success, png = cv2.imencode(".png", image)
     if not success:
         raise ValueError(f"Cannot encode color silkscreen image: {source}")
@@ -235,8 +209,6 @@ def read_color_silk_image(
         + base64.b64encode(png.tobytes()).decode("ascii")
     )
     return ColorSilkImage(
-        width_mm=width_mm,
-        height_mm=physical_height,
         width_px=width_px,
         height_px=height_px,
         file_name=f"{source.stem}.png",
@@ -452,65 +424,42 @@ def safe_project_name(name: str) -> str:
 
 
 def build_project(
-    image: PreparedImage,
+    layers: list[PositionedLayer],
+    canvas_width_px: int,
+    canvas_height_px: int,
+    width_mm: float,
+    height_mm: float,
     project_name: str,
-    side: str,
-    margin_mm: float,
-    include_outline: bool,
-    source_type: str = "enig",
-    silk_image: PreparedImage | None = None,
-    color_silk_image: ColorSilkImage | None = None,
-    solder_mask_color: str = "#264F3A",
+    solder_mask_color: str,
 ) -> ProjectArtifact:
-    if side not in ("top", "bottom"):
-        raise ValueError("side must be top or bottom")
-    if margin_mm < 0:
-        raise ValueError("margin_mm must not be negative")
-    if source_type not in ("enig", "silk", "color-silk"):
-        raise ValueError("source_type must be enig, silk, or color-silk")
-    if source_type == "silk" and (
-        silk_image is not None or color_silk_image is not None
-    ):
-        raise ValueError(
-            "A monochrome silkscreen primary image cannot be combined "
-            "with another silkscreen image"
-        )
-    if source_type == "color-silk" and (
-        silk_image is not None or color_silk_image is None
-    ):
-        raise ValueError("A color-silk primary image requires exactly one color image")
     solder_mask_color = normalize_color(solder_mask_color)
+    if canvas_width_px <= 0 or canvas_height_px <= 0:
+        raise ValueError("Canvas dimensions must be greater than zero")
+    if width_mm <= 0 or height_mm <= 0:
+        raise ValueError("Physical dimensions must be greater than zero")
 
     project_uuid = secrets.token_hex(8)
     board_uuid = secrets.token_hex(8)
     pcb_uuid = secrets.token_hex(8)
     writer = LogWriter(secrets.token_hex(8))
     now_ms = int(time.time() * 1000)
-    safe_name = safe_project_name(project_name)
-
-    board_width_mm = image.width_mm + margin_mm * 2
-    board_height_mm = image.height_mm + margin_mm * 2
-    board_width_units = board_width_mm * UNITS_PER_MM
-    board_height_units = board_height_mm * UNITS_PER_MM
+    margin_mm = 1.0
+    board_width_units = (width_mm + margin_mm * 2) * UNITS_PER_MM
+    board_height_units = (height_mm + margin_mm * 2) * UNITS_PER_MM
     margin_units = margin_mm * UNITS_PER_MM
+    pixel_width_units = width_mm / canvas_width_px * UNITS_PER_MM
+    pixel_height_units = height_mm / canvas_height_px * UNITS_PER_MM
+
     writer.document("BOARD", board_uuid, now_ms)
     writer.record("META", {"title": "Board1", "zIndex": None}, "META")
     writer.record("META_MODIFY", {"updateTime": now_ms}, "META_MODIFY")
-
     writer.document("PCB", pcb_uuid, now_ms)
     write_pcb_defaults(writer, board_width_units, board_height_units, solder_mask_color)
-    if side == "top":
-        enig_layers = (LAYER_IDS["top-copper"], LAYER_IDS["top-mask"])
-        silk_layer = LAYER_IDS["top-silk"]
-    else:
-        enig_layers = (LAYER_IDS["bottom-copper"], LAYER_IDS["bottom-mask"])
-        silk_layer = LAYER_IDS["bottom-silk"]
 
-    enig_image = image if source_type == "enig" else None
-    effective_silk_image = image if source_type == "silk" else silk_image
-
-    fill_count = (len(enig_image.rectangles) * 2 if enig_image else 0) + (
-        len(effective_silk_image.rectangles) if effective_silk_image else 0
+    fill_count = sum(
+        len(layer.binary_image.rectangles) * 2
+        for layer in layers
+        if layer.binary_image is not None
     )
     if fill_count:
         writer.record(
@@ -521,18 +470,20 @@ def build_project(
 
     primitive_count = 0
 
-    def write_rectangles(artwork: PreparedImage, layer_ids: tuple[int, ...]) -> None:
+    def write_rectangles(layer: PositionedLayer) -> None:
         nonlocal primitive_count
-        artwork_pixel_width_units = artwork.pixel_width_mm * UNITS_PER_MM
-        artwork_pixel_height_units = artwork.pixel_height_mm * UNITS_PER_MM
+        artwork = layer.binary_image
+        if artwork is None:
+            return
+        bottom = canvas_height_px - layer.y - artwork.height_px
         for rectangle in artwork.rectangles:
             path = rectangle_path(
-                margin_units + rectangle.x0 * artwork_pixel_width_units,
-                margin_units + rectangle.y0 * artwork_pixel_height_units,
-                margin_units + rectangle.x1 * artwork_pixel_width_units,
-                margin_units + rectangle.y1 * artwork_pixel_height_units,
+                margin_units + (layer.x + rectangle.x0) * pixel_width_units,
+                margin_units + (bottom + rectangle.y0) * pixel_height_units,
+                margin_units + (layer.x + rectangle.x1) * pixel_width_units,
+                margin_units + (bottom + rectangle.y1) * pixel_height_units,
             )
-            for layer_id in layer_ids:
+            for layer_id in (LAYER_IDS["top-copper"], LAYER_IDS["top-mask"]):
                 primitive_count += 1
                 write_fill(
                     writer,
@@ -542,71 +493,74 @@ def build_project(
                     primitive_count,
                 )
 
-    if enig_image:
-        write_rectangles(enig_image, enig_layers)
-    if effective_silk_image:
-        write_rectangles(effective_silk_image, (silk_layer,))
-    if color_silk_image:
+    color_count = sum(layer.color_image is not None for layer in layers)
+    if color_count:
         writer.record(
             "ELE_PLACEHOLDER",
-            {"dataType": "OBJ", "max": 1},
+            {"dataType": "OBJ", "max": color_count},
             "placeholder-color-silk",
         )
-        primitive_count += 1
-        writer.record(
-            "OBJ",
-            {
-                "partitionId": None,
-                "groupId": 0,
-                "locked": False,
-                "zIndex": primitive_count,
-                "layerId": silk_layer,
-                "fileName": color_silk_image.file_name,
-                "startX": margin_units,
-                "startY": margin_units,
-                "width": color_silk_image.width_mm * UNITS_PER_MM,
-                "height": color_silk_image.height_mm * UNITS_PER_MM,
-                "angle": 0,
-                "mirror": False,
-                "path": color_silk_image.data_url,
-            },
-            f"e{primitive_count}",
-        )
 
-    if include_outline:
-        writer.record(
-            "ELE_PLACEHOLDER",
-            {"dataType": "POLY", "max": 1},
-            "placeholder2",
-        )
-        primitive_count += 1
-        writer.record(
-            "POLY",
-            {
-                "partitionId": "",
-                "groupId": 0,
-                "netName": "",
-                "layerId": LAYER_IDS["outline"],
-                "width": 1.0,
-                "path": [
-                    0.0,
-                    0.0,
-                    "L",
-                    board_width_units,
-                    0.0,
-                    board_width_units,
-                    board_height_units,
-                    0.0,
-                    board_height_units,
-                    0.0,
-                    0.0,
-                ],
-                "locked": False,
-                "zIndex": primitive_count,
-                "polyType": "NORMAL",
-            },
-            f"e{primitive_count}",
-        )
+    for layer in reversed(layers):
+        if layer.kind == "enig":
+            write_rectangles(layer)
+        elif layer.kind == "silk" and layer.color_image is not None:
+            artwork = layer.color_image
+            bottom = canvas_height_px - layer.y - artwork.height_px
+            primitive_count += 1
+            writer.record(
+                "OBJ",
+                {
+                    "partitionId": None,
+                    "groupId": 0,
+                    "locked": False,
+                    "zIndex": primitive_count,
+                    "layerId": LAYER_IDS["top-silk"],
+                    "fileName": artwork.file_name,
+                    "startX": margin_units + layer.x * pixel_width_units,
+                    "startY": margin_units + bottom * pixel_height_units,
+                    "width": artwork.width_px * pixel_width_units,
+                    "height": artwork.height_px * pixel_height_units,
+                    "angle": 0,
+                    "mirror": False,
+                    "path": artwork.data_url,
+                },
+                f"e{primitive_count}",
+            )
+
+    writer.record(
+        "ELE_PLACEHOLDER",
+        {"dataType": "POLY", "max": 1},
+        "placeholder2",
+    )
+    primitive_count += 1
+    writer.record(
+        "POLY",
+        {
+            "partitionId": "",
+            "groupId": 0,
+            "netName": "",
+            "layerId": LAYER_IDS["outline"],
+            "width": 1.0,
+            "path": [
+                0.0,
+                0.0,
+                "L",
+                board_width_units,
+                0.0,
+                board_width_units,
+                board_height_units,
+                0.0,
+                board_height_units,
+                0.0,
+                0.0,
+            ],
+            "locked": False,
+            "zIndex": primitive_count,
+            "polyType": "NORMAL",
+        },
+        f"e{primitive_count}",
+    )
 
     writer.record(
         "META",
@@ -640,7 +594,7 @@ def build_project(
     return ProjectArtifact(
         log_text=writer.text(),
         project_json={
-            "title": safe_name,
+            "title": safe_project_name(project_name),
             "cbb_project": False,
             "editorVersion": EDITOR_VERSION,
             "introduction": "Generated by img2enig",
@@ -712,150 +666,192 @@ def validate_epro2(path: str | Path) -> dict[str, Any]:
     }
 
 
-def convert(
-    source: str | Path,
-    output: str | Path | None,
-    width_mm: float,
-    height_mm: float | None,
-    side: str,
-    margin_mm: float,
-    include_outline: bool,
-    project_name: str | None,
-    source_type: str = "enig",
-    silk_source: str | Path | None = None,
-    color_silk_source: str | Path | None = None,
+def prepare_positioned_layers(
+    specs: list[LayerSpec],
+    canvas_width_px: int,
+    canvas_height_px: int,
+) -> list[PositionedLayer]:
+    if not specs:
+        raise ValueError("At least one layer is required")
+    if canvas_width_px <= 0 or canvas_height_px <= 0:
+        raise ValueError("Canvas dimensions must be greater than zero")
+    layers: list[PositionedLayer] = []
+    for spec in specs:
+        if spec.kind not in ("enig", "silk"):
+            raise ValueError("Layer type must be enig or silk")
+        if not np.isfinite(spec.x) or not np.isfinite(spec.y):
+            raise ValueError("Layer coordinates must be finite")
+        if spec.x < 0 or spec.y < 0:
+            raise ValueError("Layer coordinates must not be negative")
+        if spec.kind == "enig":
+            binary = read_binary_image(spec.source)
+            width_px, height_px = binary.width_px, binary.height_px
+            layer = PositionedLayer("enig", spec.x, spec.y, binary)
+        else:
+            color = read_color_silk_image(spec.source)
+            width_px, height_px = color.width_px, color.height_px
+            layer = PositionedLayer("silk", spec.x, spec.y, color_image=color)
+        if (spec.x + width_px > canvas_width_px + 1e-9
+                or spec.y + height_px > canvas_height_px + 1e-9):
+            raise ValueError("Layer lies outside the canvas")
+        layers.append(layer)
+    return layers
+
+
+def convert_layers(
+    specs: list[LayerSpec],
+    output: str | Path,
+    canvas_width_px: int,
+    canvas_height_px: int,
+    width_mm: float | None = None,
+    height_mm: float | None = None,
+    project_name: str | None = None,
     solder_mask_color: str = "#264F3A",
 ) -> dict[str, Any]:
-    source_path = Path(source)
-    color_silk_image = None
-    if source_type == "color-silk":
-        color_silk_image = read_color_silk_image(source_path, width_mm, height_mm)
-        image = PreparedImage(
-            width_mm=color_silk_image.width_mm,
-            height_mm=color_silk_image.height_mm,
-            pixel_width_mm=color_silk_image.width_mm / color_silk_image.width_px,
-            pixel_height_mm=color_silk_image.height_mm / color_silk_image.height_px,
-            rectangles=[],
-        )
-    else:
-        image = read_binary_image(source_path, width_mm, height_mm)
-    silk_image = None
-    if silk_source is not None:
-        silk_image = read_binary_image(
-            Path(silk_source), image.width_mm, image.height_mm
-        )
-        if (
-            silk_image.pixel_width_mm != image.pixel_width_mm
-            or silk_image.pixel_height_mm != image.pixel_height_mm
-        ):
-            raise ValueError(
-                "Silkscreen mask must have the same pixel dimensions "
-                "as the primary mask"
-            )
-    if color_silk_source is not None:
-        if source_type == "color-silk":
-            raise ValueError(
-                "color_silk_source cannot be combined with a color-silk primary image"
-            )
-        color_silk_image = read_color_silk_image(
-            Path(color_silk_source), image.width_mm, image.height_mm
-        )
-        expected_width_px = round(image.width_mm / image.pixel_width_mm)
-        expected_height_px = round(image.height_mm / image.pixel_height_mm)
-        if (color_silk_image.width_px, color_silk_image.height_px) != (
-            expected_width_px,
-            expected_height_px,
-        ):
-            raise ValueError(
-                "Color silkscreen image must have the same pixel dimensions "
-                "as the primary mask"
-            )
+    layers = prepare_positioned_layers(specs, canvas_width_px, canvas_height_px)
+    physical_width = 50.0 if width_mm is None else width_mm
+    physical_height = (
+        physical_width * canvas_height_px / canvas_width_px
+        if height_mm is None else height_mm
+    )
     artifact = build_project(
-        image,
-        project_name or source_path.stem,
-        side,
-        margin_mm,
-        include_outline,
-        source_type,
-        silk_image,
-        color_silk_image,
+        layers,
+        canvas_width_px,
+        canvas_height_px,
+        physical_width,
+        physical_height,
+        project_name or Path(output).stem,
         solder_mask_color,
     )
-    output_path = write_epro2(output or source_path.with_suffix(".epro2"), artifact)
+    output_path = write_epro2(output, artifact)
     validation = validate_epro2(output_path)
-    if source_type in ("silk", "color-silk"):
-        expected_layers = {3} if side == "top" else {4}
-    else:
-        expected_layers = {1, 5} if side == "top" else {2, 6}
-        if silk_image or color_silk_image:
-            expected_layers.add(3 if side == "top" else 4)
+    expected_layers: set[int] = set()
+    if any(layer.kind == "enig" for layer in layers):
+        expected_layers.update((1, 5))
+    if any(layer.kind == "silk" for layer in layers):
+        expected_layers.add(3)
     if set(validation["artworkLayers"]) != expected_layers:
         raise ValueError("Generated project does not contain the expected artwork layers")
     return {
         "output": str(output_path),
-        "width_mm": image.width_mm,
-        "height_mm": image.height_mm,
-        "rectangles": len(image.rectangles),
+        "width_mm": physical_width,
+        "height_mm": physical_height,
+        "layers": len(layers),
         "primitives": artifact.primitive_count,
         "validation": validation,
     }
 
 
+def read_manifest(path: str | Path) -> tuple[list[LayerSpec], dict[str, Any]]:
+    manifest_path = Path(path)
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("layers"), list):
+        raise ValueError("Manifest must contain a layers array")
+    specs: list[LayerSpec] = []
+    for item in data["layers"]:
+        if not isinstance(item, dict):
+            raise ValueError("Each manifest layer must be an object")
+        if item.get("visible", True) is False:
+            continue
+        try:
+            source = Path(item["source"])
+            kind = str(item["type"])
+            x = float(item["x"])
+            y = float(item["y"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                "Each manifest layer requires source, type, x, and y"
+            ) from error
+        if not source.is_absolute():
+            source = manifest_path.parent / source
+        specs.append(LayerSpec(source, kind, x, y))
+    canvas = data.get("canvas", {})
+    if not isinstance(canvas, dict):
+        raise ValueError("Manifest canvas must be an object")
+    settings = {
+        "canvas_width_px": canvas.get("width"),
+        "canvas_height_px": canvas.get("height"),
+        "width_mm": canvas.get("widthMm", data.get("widthMm")),
+        "height_mm": canvas.get("heightMm", data.get("heightMm")),
+        "project_name": data.get("projectName"),
+        "solder_mask_color": data.get("solderMaskColor"),
+    }
+    return specs, settings
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Convert an already-processed black/white image into matching copper "
-            "and solder-mask opening geometry, with optional silkscreen artwork."
+            "Convert positioned ENIG masks and full-color silkscreen images into "
+            "an EasyEDA Pro PCB artwork project."
         )
     )
-    parser.add_argument("source", type=Path, help="prepared black/white image or epro2")
-    parser.add_argument("-o", "--output", type=Path)
-    parser.add_argument("--width-mm", type=float, default=50.0)
+    parser.add_argument("-o", "--output", type=Path, required=True)
+    parser.add_argument("--width-mm", type=float)
     parser.add_argument("--height-mm", type=float)
-    parser.add_argument("--side", choices=("top", "bottom"), default="top")
-    parser.add_argument(
-        "--source-type",
-        choices=("enig", "silk", "color-silk"),
-        default="enig",
-    )
-    parser.add_argument("--silk", type=Path, help="optional aligned black/white silkscreen mask")
-    parser.add_argument(
-        "--color-silk",
-        type=Path,
-        help="optional aligned full-color silkscreen image",
-    )
+    parser.add_argument("--canvas-width", type=int, help="canvas width in pixels")
+    parser.add_argument("--canvas-height", type=int, help="canvas height in pixels")
     parser.add_argument(
         "--solder-mask-color",
-        default="#264F3A",
         help="PCB solder-mask color as #RRGGBB",
     )
-    parser.add_argument("--margin-mm", type=float, default=1.0)
-    parser.add_argument("--no-outline", action="store_true")
+    parser.add_argument(
+        "--layer",
+        action="append",
+        nargs=4,
+        metavar=("IMAGE", "TYPE", "X", "Y"),
+        help="repeatable layer: image, enig|silk, top-left X, top-left Y",
+    )
+    parser.add_argument("--manifest", type=Path, help="JSON layer manifest")
     parser.add_argument("--project-name")
-    parser.add_argument("--inspect", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.inspect:
-            result = validate_epro2(args.source)
+        if bool(args.layer) == bool(args.manifest):
+            raise ValueError("Use either --layer or --manifest")
+        specs: list[LayerSpec]
+        settings: dict[str, Any] = {}
+        if args.manifest:
+            specs, settings = read_manifest(args.manifest)
         else:
-            result = convert(
-                source=args.source,
-                output=args.output,
-                width_mm=args.width_mm,
-                height_mm=args.height_mm,
-                side=args.side,
-                margin_mm=args.margin_mm,
-                include_outline=not args.no_outline,
-                project_name=args.project_name,
-                source_type=args.source_type,
-                silk_source=args.silk,
-                color_silk_source=args.color_silk,
-                solder_mask_color=args.solder_mask_color,
-            )
+            specs = [
+                LayerSpec(Path(source), kind, float(x), float(y))
+                for source, kind, x, y in args.layer
+            ]
+
+        def setting(name: str, value: Any, default: Any = None) -> Any:
+            if value is not None:
+                return value
+            manifest_value = settings.get(name)
+            return default if manifest_value is None else manifest_value
+
+        canvas_width = setting("canvas_width_px", args.canvas_width)
+        canvas_height = setting("canvas_height_px", args.canvas_height)
+        if canvas_width is None or canvas_height is None:
+            raise ValueError("Canvas width and height are required")
+        result = convert_layers(
+            specs=specs,
+            output=args.output,
+            canvas_width_px=int(canvas_width),
+            canvas_height_px=int(canvas_height),
+            width_mm=(
+                float(value)
+                if (value := setting("width_mm", args.width_mm)) is not None
+                else None
+            ),
+            height_mm=(
+                float(value)
+                if (value := setting("height_mm", args.height_mm)) is not None
+                else None
+            ),
+            project_name=setting("project_name", args.project_name),
+            solder_mask_color=setting(
+                "solder_mask_color", args.solder_mask_color, "#264F3A"
+            ),
+        )
         print(json.dumps(result, ensure_ascii=False, indent=4))
         return 0
     except Exception as error:

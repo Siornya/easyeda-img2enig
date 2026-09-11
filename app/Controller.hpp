@@ -100,8 +100,6 @@ private:
 	void finishPcb(QProcess* process, int exitCode, bool processFailed);
 	void loadSelectedLayer();
 	void refreshLayerPresentation();
-	QImage materialMask(const QString& type, bool* hasArtwork = nullptr) const;
-	QImage colorSilkImage(bool* hasArtwork = nullptr) const;
 	QSize layerSize(const ArtworkLayer& layer) const;
 	QSize canvasSize() const;
 	ImageStore* images;

@@ -1,21 +1,18 @@
 from __future__ import annotations
 
 import base64
+import io
+import json
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-import numpy as np
 import cv2
+import numpy as np
 
-from img2enig import (
-    PixelRectangle,
-    build_project,
-    convert,
-    parse_log_line,
-    read_binary_image,
-)
+from img2enig import main, parse_log_line, read_binary_image, read_manifest
 
 
 def write_image(path: Path, image: np.ndarray) -> None:
@@ -26,8 +23,8 @@ def write_image(path: Path, image: np.ndarray) -> None:
 
 
 class Img2EnigTests(unittest.TestCase):
-    def make_asymmetric_image(self, directory: str) -> Path:
-        source = Path(directory) / "方向测试.png"
+    def make_binary_image(self, directory: str) -> Path:
+        source = Path(directory) / "沉金.png"
         image = np.full((3, 4), 255, dtype=np.uint8)
         image[0, 0] = 0
         image[2, 3] = 0
@@ -43,131 +40,148 @@ class Img2EnigTests(unittest.TestCase):
         write_image(source, image)
         return source
 
-    def test_raster_y_axis_is_flipped_without_flipping_x(self) -> None:
+    def test_enig_input_requires_cpp_processed_black_and_white_grayscale(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            source = self.make_asymmetric_image(directory)
-            prepared = read_binary_image(source, 4.0, 3.0)
+            source = self.make_binary_image(directory)
+            image = read_binary_image(source)
+            self.assertEqual((image.width_px, image.height_px), (4, 3))
             self.assertEqual(
-                set(prepared.rectangles),
-                {
-                    PixelRectangle(3, 0, 4, 1),
-                    PixelRectangle(0, 2, 1, 3),
-                },
+                {(item.x0, item.y0, item.x1, item.y1) for item in image.rectangles},
+                {(3, 0, 4, 1), (0, 2, 1, 3)},
             )
 
-    def test_primitive_ids_are_unique_and_outline_follows_fills(self) -> None:
+            color = Path(directory) / "未处理彩色图.png"
+            write_image(color, np.zeros((2, 2, 3), dtype=np.uint8))
+            with self.assertRaisesRegex(ValueError, r"C\+\+-processed grayscale"):
+                read_binary_image(color)
+
+            gray = Path(directory) / "未二值化灰度图.png"
+            write_image(gray, np.full((2, 2), 127, dtype=np.uint8))
+            with self.assertRaisesRegex(ValueError, "pure black/white"):
+                read_binary_image(gray)
+
+    def test_manifest_preserves_layers_positions_colors_and_dimensions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            source = self.make_asymmetric_image(directory)
-            prepared = read_binary_image(source, 4.0, 3.0)
-            artifact = build_project(prepared, "test", "top", 1.0, True)
-            primitive_ids = []
-            primitive_types = []
-            for line in artifact.log_text.splitlines():
-                outer, _inner = parse_log_line(line)
-                if outer["type"] in {"FILL", "POLY"}:
-                    primitive_ids.append(outer["id"])
-                    primitive_types.append(outer["type"])
-            self.assertEqual(len(primitive_ids), 5)
-            self.assertEqual(len(set(primitive_ids)), 5)
+            enig = self.make_binary_image(directory)
+            silk = self.make_color_image(directory)
+            manifest = Path(directory) / "layers.json"
+            manifest.write_text(json.dumps({
+                "canvas": {
+                    "width": 10,
+                    "height": 8,
+                    "widthMm": 10,
+                    "heightMm": 8,
+                },
+                "projectName": "多图层测试",
+                "solderMaskColor": "#164D73",
+                "layers": [
+                    {"source": enig.name, "type": "enig", "x": 1, "y": 2},
+                    {"source": silk.name, "type": "silk", "x": 5, "y": 4},
+                    {"source": "ignored.png", "type": "silk", "x": 0, "y": 0,
+                     "visible": False},
+                ],
+            }), encoding="utf-8")
+            specs, settings = read_manifest(manifest)
+            self.assertEqual([item.source for item in specs], [enig, silk])
+            self.assertEqual(settings["canvas_width_px"], 10)
+
+            output = Path(directory) / "layers.epro2"
+            command_output = io.StringIO()
+            with redirect_stdout(command_output):
+                exit_code = main(["--manifest", str(manifest), "-o", str(output)])
+            self.assertEqual(exit_code, 0)
+            report = json.loads(command_output.getvalue())
+            self.assertEqual((report["width_mm"], report["height_mm"]), (10.0, 8.0))
+
+            records = self.read_records(output)
+            self.assertEqual(records["layers"], {1, 3, 5})
+            primitive_ids = [
+                outer["id"] for outer, _inner in records["all"]
+                if outer["type"] in {"FILL", "OBJ", "POLY"}
+            ]
+            self.assertEqual(len(primitive_ids), len(set(primitive_ids)))
+            primitive_types = [
+                outer["type"] for outer, _inner in records["all"]
+                if outer["type"] in {"FILL", "OBJ", "POLY"}
+            ]
             self.assertEqual(primitive_types[-1], "POLY")
 
-    def test_top_and_bottom_outputs_have_expected_layers(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source = self.make_asymmetric_image(directory)
-            for side, layers in (("top", [1, 5]), ("bottom", [2, 6])):
-                with self.subTest(side=side):
-                    result = convert(
-                        source=source,
-                        output=Path(directory) / f"{side}.epro2",
-                        width_mm=4.0,
-                        height_mm=3.0,
-                        side=side,
-                        margin_mm=1.0,
-                        include_outline=True,
-                        project_name=None,
-                    )
-                    self.assertEqual(result["validation"]["fillLayers"], layers)
-                    self.assertEqual(result["primitives"], 5)
+            scale = 1 / 0.254
+            copper_boxes = {
+                tuple(round(value / scale) for value in (
+                    fill["path"][0][0], fill["path"][0][1],
+                    fill["path"][0][3], fill["path"][0][6],
+                ))
+                for fill in records["fills"]
+                if fill["layerId"] == 1
+            }
+            self.assertEqual(copper_boxes, {(2, 6, 3, 7), (5, 4, 6, 5)})
 
-    def test_silkscreen_only_and_combined_artwork_layers(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source = self.make_asymmetric_image(directory)
-            silk_only = convert(
-                source=source,
-                output=Path(directory) / "silk.epro2",
-                width_mm=4.0,
-                height_mm=3.0,
-                side="top",
-                margin_mm=1.0,
-                include_outline=True,
-                project_name=None,
-                source_type="silk",
-            )
-            self.assertEqual(silk_only["validation"]["fillLayers"], [3])
-            self.assertEqual(silk_only["primitives"], 3)
-
-            combined = convert(
-                source=source,
-                output=Path(directory) / "combined.epro2",
-                width_mm=4.0,
-                height_mm=3.0,
-                side="top",
-                margin_mm=1.0,
-                include_outline=True,
-                project_name=None,
-                silk_source=source,
-            )
-            self.assertEqual(combined["validation"]["fillLayers"], [1, 3, 5])
-            self.assertEqual(combined["primitives"], 7)
-
-    def test_full_color_silkscreen_and_solder_mask_color_are_exported(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            color_source = self.make_color_image(directory)
-            output = Path(directory) / "color-silk.epro2"
-            result = convert(
-                source=color_source,
-                output=output,
-                width_mm=4.0,
-                height_mm=3.0,
-                side="top",
-                margin_mm=1.0,
-                include_outline=True,
-                project_name=None,
-                source_type="color-silk",
-                solder_mask_color="#164d73",
-            )
-            self.assertEqual(result["validation"]["fillLayers"], [])
-            self.assertEqual(result["validation"]["objectLayers"], [3])
-            self.assertEqual(result["validation"]["artworkLayers"], [3])
-            self.assertEqual(result["primitives"], 2)
-
-            with zipfile.ZipFile(output, "r") as archive:
-                epru = next(name for name in archive.namelist() if name.endswith(".epru"))
-                records = [parse_log_line(line) for line in archive.read(epru).decode().splitlines()]
-            color_objects = [inner for outer, inner in records if outer["type"] == "OBJ"]
-            self.assertEqual(len(color_objects), 1)
-            self.assertEqual(color_objects[0]["layerId"], 3)
-            self.assertTrue(color_objects[0]["path"].startswith("data:image/png;base64,"))
-            payload = color_objects[0]["path"].split(",", 1)[1]
+            color_object = records["objects"][0]
+            self.assertAlmostEqual(color_object["startX"], 6 * scale)
+            self.assertAlmostEqual(color_object["startY"], 2 * scale)
+            self.assertAlmostEqual(color_object["width"], 4 * scale)
+            self.assertAlmostEqual(color_object["height"], 3 * scale)
+            payload = color_object["path"].split(",", 1)[1]
             decoded = cv2.imdecode(
                 np.frombuffer(base64.b64decode(payload), dtype=np.uint8),
                 cv2.IMREAD_UNCHANGED,
             )
-            self.assertEqual(decoded[0, 0].tolist(), [0, 0, 255, 255])
             self.assertEqual(decoded[1, 1].tolist(), [0, 255, 0, 192])
-            self.assertEqual(decoded[2, 3].tolist(), [255, 0, 0, 255])
 
-            mask_layers = [
-                inner
-                for outer, inner in records
+            mask_colors = {
+                inner["activeColor"]
+                for outer, inner in records["all"]
                 if outer["type"] == "LAYER" and inner["layerType"] in {
-                    "TOP_SOLDER_MASK",
-                    "BOT_SOLDER_MASK",
+                    "TOP_SOLDER_MASK", "BOT_SOLDER_MASK"
                 }
+            }
+            self.assertEqual(mask_colors, {"#164D73"})
+
+    def test_repeated_layer_arguments_remain_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            enig = self.make_binary_image(directory)
+            output = Path(directory) / "direct.epro2"
+            with redirect_stdout(io.StringIO()):
+                exit_code = main([
+                    "--layer", str(enig), "enig", "2", "1",
+                    "--canvas-width", "8",
+                    "--canvas-height", "6",
+                    "-o", str(output),
+                ])
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(output.is_file())
+
+    def test_missing_layer_input_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "missing.epro2"
+            with redirect_stderr(io.StringIO()):
+                exit_code = main([
+                    "--canvas-width", "8",
+                    "--canvas-height", "6",
+                    "-o", str(output),
+                ])
+            self.assertEqual(exit_code, 1)
+            self.assertFalse(output.exists())
+
+    @staticmethod
+    def read_records(path: Path) -> dict[str, object]:
+        with zipfile.ZipFile(path, "r") as archive:
+            epru = next(name for name in archive.namelist() if name.endswith(".epru"))
+            records = [
+                parse_log_line(line)
+                for line in archive.read(epru).decode().splitlines()
             ]
-            self.assertEqual({layer["activeColor"] for layer in mask_layers}, {"#164D73"})
-            silk_options = [inner for outer, inner in records if outer["type"] == "SILK_OPTS"]
-            self.assertEqual({options["baseColor"] for options in silk_options}, {"#164D73"})
+        return {
+            "all": records,
+            "layers": {
+                inner["layerId"]
+                for outer, inner in records
+                if outer["type"] in {"FILL", "OBJ"}
+            },
+            "objects": [inner for outer, inner in records if outer["type"] == "OBJ"],
+            "fills": [inner for outer, inner in records if outer["type"] == "FILL"],
+        }
 
 
 if __name__ == "__main__":

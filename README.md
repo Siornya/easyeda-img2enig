@@ -2,7 +2,7 @@
 
 将普通图片处理为沉金图案或保留原色的彩色丝印，再转换成可导入嘉立创EDA专业版的 PCB 图案工程。
 
-桌面应用使用 C++20、Qt 6 Quick/QML 和 OpenCV C++。旧版 Python 界面和二值化实现已经移除；`img2enig.py` 作为独立 PCB 导出器继续使用。
+桌面应用使用 C++20、Qt 6 Quick/QML 和 OpenCV C++。旧版 Python 界面和二值化实现已经移除；Qt 只在最后一步调用 `img2enig.py` 生成 PCB 工程。
 
 ## 功能
 
@@ -18,7 +18,7 @@
 - `core/`：C++/OpenCV 图片处理核心。
 - `app/`：Qt 后台任务、图层管理和 PCB 导出调用。
 - `qml/`：Qt Quick 界面。
-- `img2enig.py`：把沉金掩膜和彩色丝印转换成 `.epro2`。
+- `img2enig.py`：接收 C++ 输出的图层清单并生成 `.epro2`。
 - `tests/`：C++ 算法、控制器和 Python PCB 导出器测试。
 
 ## 启动桌面应用
@@ -68,46 +68,50 @@ python3 -m venv .venv
 4. 选择阻焊颜色和输出目录。
 5. 保存黑白图片，或生成包含所有可见图层的 PCB 文件。
 
-## 单独使用 PCB 导出器
+## PCB 导出器接口
 
-`img2enig.py` 的沉金和传统单色丝印输入必须是像素值为 `0` 或 `255` 的纯黑白图片。彩色丝印输入会保留原始 RGBA 颜色和透明区域。
+Qt 应用会把可见图层写入临时 JSON 清单，再调用 `img2enig.py` 完成最后一步 PCB 工程生成。Python 不再负责灰度转换或二值化：沉金输入必须是 C++ 生成的单通道纯黑白 PNG，丝印输入会保留原始颜色和透明区域。当前导出固定使用顶面和 1 mm 板边，与界面行为一致。
 
-导出沉金图案：
+图层坐标使用画布像素，X 向右、Y 向下。清单格式如下：
 
-```sh
-.venv/bin/python img2enig.py input.binary.png -o output.epro2
+```json
+{
+    "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "widthMm": 162.56,
+        "heightMm": 91.44
+    },
+    "projectName": "角色铭牌",
+    "solderMaskColor": "#191B1D",
+    "layers": [
+        {"source": "background.png", "type": "silk", "x": 0, "y": 0},
+        {"source": "character.png", "type": "silk", "x": 420, "y": 120},
+        {"source": "signature.binary.png", "type": "enig", "x": 1380, "y": 850}
+    ]
+}
 ```
 
-指定尺寸和板边：
-
 ```sh
-.venv/bin/python img2enig.py input.binary.png \
-    -o output.epro2 \
-    --width-mm 40 \
-    --margin-mm 2
+.venv/bin/python img2enig.py --manifest layers.json -o output.epro2
 ```
 
-导出彩色丝印并设置阻焊颜色：
+清单中的相对图片路径以清单文件所在目录为基准，图层可以设置 `"visible": false` 跳过导出。Qt 会根据选中图层的 DPI 计算 `widthMm` 和 `heightMm`；没有可靠 DPI 时，Python 使用 50 mm 画布宽度并保持宽高比。
+
+为方便调试，也保留重复的 `--layer` 参数：
 
 ```sh
-.venv/bin/python img2enig.py silk.png \
-    --source-type color-silk \
-    --solder-mask-color '#164D73'
+.venv/bin/python img2enig.py \
+    --layer background.png silk 0 0 \
+    --layer signature.binary.png enig 1380 850 \
+    --canvas-width 1920 \
+    --canvas-height 1080 \
+    --width-mm 162.56 \
+    --height-mm 91.44 \
+    -o output.epro2
 ```
 
-为沉金图案添加彩色丝印：
-
-```sh
-.venv/bin/python img2enig.py enig.binary.png \
-    --color-silk silk.png \
-    --solder-mask-color '#191B1D'
-```
-
-检查生成的工程：
-
-```sh
-.venv/bin/python img2enig.py output.epro2 --inspect
-```
+每个 `--layer` 后依次填写图片路径、`enig|silk`、左上 X 和左上 Y。画布宽高和输出路径必须提供。
 
 `.epro2` 内含 `project2.json`，以及包含 `BOARD`、`PCB`、`CONFIG` 文档的 `.epru` 日志。当前不生成 SQLite 格式的 `.eprj2`。
 
