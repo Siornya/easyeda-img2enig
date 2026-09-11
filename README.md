@@ -9,6 +9,11 @@
 
 分开运行可以先确认黑白图效果，再处理 PCB 文件格式和物理尺寸。
 
+## C++ / Qt Quick 新版
+
+C++ 新版已完成二值化核心、实时预览和 Try All 多算法对比；旧版 Python 界面和 PCB 导出器保持可用。
+构建和运行方法见 [新版说明](native/README.md)。
+
 ## 项目结构
 
 - `image_binarizer.py`：图片处理核心、Python API 和命令行入口。
