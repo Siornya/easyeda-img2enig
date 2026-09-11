@@ -1,4 +1,4 @@
-"""Convert a prepared black/white image into EasyEDA Pro ENIG artwork."""
+"""Convert prepared black/white masks into EasyEDA Pro ENIG and silkscreen artwork."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ EDITOR_VERSION = "3.2"
 LAYER_IDS = {
     "top-copper": 1,
     "bottom-copper": 2,
+    "top-silk": 3,
+    "bottom-silk": 4,
     "top-mask": 5,
     "bottom-mask": 6,
     "outline": 11,
@@ -138,7 +140,11 @@ class LogWriter:
         return "\n".join(self.lines) + "\n"
 
 
-def read_binary_image(path: str | Path, width_mm: float, height_mm: float | None) -> PreparedImage:
+def read_binary_image(
+    path: str | Path,
+    width_mm: float,
+    height_mm: float | None,
+) -> PreparedImage:
     source = Path(path)
     if not source.is_file():
         raise FileNotFoundError(f"Image does not exist: {source}")
@@ -389,11 +395,17 @@ def build_project(
     side: str,
     margin_mm: float,
     include_outline: bool,
+    source_type: str = "enig",
+    silk_image: PreparedImage | None = None,
 ) -> ProjectArtifact:
     if side not in ("top", "bottom"):
         raise ValueError("side must be top or bottom")
     if margin_mm < 0:
         raise ValueError("margin_mm must not be negative")
+    if source_type not in ("enig", "silk"):
+        raise ValueError("source_type must be enig or silk")
+    if source_type == "silk" and silk_image is not None:
+        raise ValueError("silk_image cannot be combined with a silk primary image")
 
     project_uuid = secrets.token_hex(8)
     board_uuid = secrets.token_hex(8)
@@ -407,9 +419,6 @@ def build_project(
     board_width_units = board_width_mm * UNITS_PER_MM
     board_height_units = board_height_mm * UNITS_PER_MM
     margin_units = margin_mm * UNITS_PER_MM
-    pixel_width_units = image.pixel_width_mm * UNITS_PER_MM
-    pixel_height_units = image.pixel_height_mm * UNITS_PER_MM
-
     writer.document("BOARD", board_uuid, now_ms)
     writer.record("META", {"title": "Board1", "zIndex": None}, "META")
     writer.record("META_MODIFY", {"updateTime": now_ms}, "META_MODIFY")
@@ -417,11 +426,18 @@ def build_project(
     writer.document("PCB", pcb_uuid, now_ms)
     write_pcb_defaults(writer, board_width_units, board_height_units)
     if side == "top":
-        target_layers = (LAYER_IDS["top-copper"], LAYER_IDS["top-mask"])
+        enig_layers = (LAYER_IDS["top-copper"], LAYER_IDS["top-mask"])
+        silk_layer = LAYER_IDS["top-silk"]
     else:
-        target_layers = (LAYER_IDS["bottom-copper"], LAYER_IDS["bottom-mask"])
+        enig_layers = (LAYER_IDS["bottom-copper"], LAYER_IDS["bottom-mask"])
+        silk_layer = LAYER_IDS["bottom-silk"]
 
-    fill_count = len(image.rectangles) * 2
+    enig_image = image if source_type == "enig" else None
+    effective_silk_image = image if source_type == "silk" else silk_image
+
+    fill_count = (len(enig_image.rectangles) * 2 if enig_image else 0) + (
+        len(effective_silk_image.rectangles) if effective_silk_image else 0
+    )
     if fill_count:
         writer.record(
             "ELE_PLACEHOLDER",
@@ -430,23 +446,32 @@ def build_project(
         )
 
     primitive_count = 0
-    for rectangle in image.rectangles:
-        path = rectangle_path(
-            margin_units + rectangle.x0 * pixel_width_units,
-            margin_units + rectangle.y0 * pixel_height_units,
-            margin_units + rectangle.x1 * pixel_width_units,
-            margin_units + rectangle.y1 * pixel_height_units,
-        )
-        for layer_id in target_layers:
-            primitive_count += 1
-            write_fill(
-                writer,
-                f"e{primitive_count}",
-                layer_id,
-                path,
-                primitive_count,
-            )
 
+    def write_rectangles(artwork: PreparedImage, layer_ids: tuple[int, ...]) -> None:
+        nonlocal primitive_count
+        artwork_pixel_width_units = artwork.pixel_width_mm * UNITS_PER_MM
+        artwork_pixel_height_units = artwork.pixel_height_mm * UNITS_PER_MM
+        for rectangle in artwork.rectangles:
+            path = rectangle_path(
+                margin_units + rectangle.x0 * artwork_pixel_width_units,
+                margin_units + rectangle.y0 * artwork_pixel_height_units,
+                margin_units + rectangle.x1 * artwork_pixel_width_units,
+                margin_units + rectangle.y1 * artwork_pixel_height_units,
+            )
+            for layer_id in layer_ids:
+                primitive_count += 1
+                write_fill(
+                    writer,
+                    f"e{primitive_count}",
+                    layer_id,
+                    path,
+                    primitive_count,
+                )
+
+    if enig_image:
+        write_rectangles(enig_image, enig_layers)
+    if effective_silk_image:
+        write_rectangles(effective_silk_image, (silk_layer,))
     if include_outline:
         writer.record(
             "ELE_PLACEHOLDER",
@@ -518,7 +543,7 @@ def build_project(
             "cbb_project": False,
             "editorVersion": EDITOR_VERSION,
             "introduction": "Generated by img2enig",
-            "description": "Binary artwork converted to copper and solder-mask opening geometry.",
+            "description": "Binary artwork converted to ENIG and silkscreen geometry.",
             "tags": "[]",
         },
         epru_name=f"{project_uuid}.epru",
@@ -590,21 +615,43 @@ def convert(
     margin_mm: float,
     include_outline: bool,
     project_name: str | None,
+    source_type: str = "enig",
+    silk_source: str | Path | None = None,
 ) -> dict[str, Any]:
     source_path = Path(source)
     image = read_binary_image(source_path, width_mm, height_mm)
+    silk_image = None
+    if silk_source is not None:
+        silk_image = read_binary_image(
+            Path(silk_source), image.width_mm, image.height_mm
+        )
+        if (
+            silk_image.pixel_width_mm != image.pixel_width_mm
+            or silk_image.pixel_height_mm != image.pixel_height_mm
+        ):
+            raise ValueError(
+                "Silkscreen mask must have the same pixel dimensions "
+                "as the primary mask"
+            )
     artifact = build_project(
         image,
         project_name or source_path.stem,
         side,
         margin_mm,
         include_outline,
+        source_type,
+        silk_image,
     )
     output_path = write_epro2(output or source_path.with_suffix(".epro2"), artifact)
     validation = validate_epro2(output_path)
-    expected_layers = {1, 5} if side == "top" else {2, 6}
+    if source_type == "silk":
+        expected_layers = {3} if side == "top" else {4}
+    else:
+        expected_layers = {1, 5} if side == "top" else {2, 6}
+        if silk_image:
+            expected_layers.add(3 if side == "top" else 4)
     if set(validation["fillLayers"]) != expected_layers:
-        raise ValueError("Generated project does not contain the expected ENIG layers")
+        raise ValueError("Generated project does not contain the expected artwork layers")
     return {
         "output": str(output_path),
         "width_mm": image.width_mm,
@@ -619,7 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Convert an already-processed black/white image into matching copper "
-            "and solder-mask opening geometry for ENIG artwork."
+            "and solder-mask opening geometry, with optional silkscreen artwork."
         )
     )
     parser.add_argument("source", type=Path, help="prepared black/white image or epro2")
@@ -627,6 +674,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width-mm", type=float, default=50.0)
     parser.add_argument("--height-mm", type=float)
     parser.add_argument("--side", choices=("top", "bottom"), default="top")
+    parser.add_argument(
+        "--source-type",
+        choices=("enig", "silk"),
+        default="enig",
+    )
+    parser.add_argument("--silk", type=Path, help="optional aligned black/white silkscreen mask")
     parser.add_argument("--margin-mm", type=float, default=1.0)
     parser.add_argument("--no-outline", action="store_true")
     parser.add_argument("--project-name")
@@ -649,6 +702,8 @@ def main(argv: list[str] | None = None) -> int:
                 margin_mm=args.margin_mm,
                 include_outline=not args.no_outline,
                 project_name=args.project_name,
+                source_type=args.source_type,
+                silk_source=args.silk,
             )
         print(json.dumps(result, ensure_ascii=False, indent=4))
         return 0

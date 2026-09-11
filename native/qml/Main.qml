@@ -16,7 +16,9 @@ ApplicationWindow {
 	property bool automaticOutput: true
 	property bool showingOriginal: false
 	property bool pendingPreview: false
+	property bool selectingLayer: false
 	property string displayedResult: ""
+	property var currentLayer: controller.selectedLayer >= 0 ? controller.layers[controller.selectedLayer] : null
 
 	function parameters() {
 		return { threshold: threshold.value, blockSize: block.value,
@@ -34,6 +36,53 @@ ApplicationWindow {
 		if (controller.busy) controller.cancel()
 		previewTimer.restart()
 	}
+	function chooseLayer(index) {
+		selectingLayer = true
+		controller.selectLayer(index)
+		applySelectedParameters()
+		sourceFile = controller.selectedSourceUrl
+		sourcePath.text = controller.localPath(sourceFile)
+		displayedResult = controller.compositeUrl
+		showingOriginal = false
+		selectingLayer = false
+	}
+	function applySelectedParameters() {
+		const values = controller.selectedParameters
+		if (values.method === undefined) return
+		method.currentIndex = values.method
+		threshold.value = values.threshold
+		block.value = values.blockSize
+		adaptiveC.value = values.adaptiveC
+		localK.value = Math.round(values.localK * 100)
+		exposure.value = values.exposure
+		contrast.value = values.contrast
+		gamma.value = Math.round(values.gamma * 100)
+		denoise.currentIndex = values.denoiseMethod
+		strength.value = values.denoiseStrength
+		smooth.value = values.smooth
+		sharpen.value = values.sharpen
+		detail.value = values.detail
+		edge.value = values.edge
+		localContrast.value = values.localContrast
+		equalize.checked = values.equalize
+		clahe.checked = values.clahe
+		invert.checked = values.invert
+		horizontal.checked = values.flipHorizontal
+		vertical.checked = values.flipVertical
+	}
+	function syncCoordinates() {
+		if (!currentLayer) {
+			leftX.text = ""
+			topY.text = ""
+			centerX.text = ""
+			centerY.text = ""
+			return
+		}
+		leftX.text = Number(currentLayer.leftX).toFixed(2)
+		topY.text = Number(currentLayer.topY).toFixed(2)
+		centerX.text = Number(currentLayer.centerX).toFixed(2)
+		centerY.text = Number(currentLayer.centerY).toFixed(2)
+	}
 	function showComparison() {
 		previewTimer.stop()
 		pendingPreview = false
@@ -41,11 +90,14 @@ ApplicationWindow {
 		comparison.open()
 		controller.compare(sourceFile, parameters())
 	}
+	function setLayerMaterial(layerIndex, materialIndex) {
+		controller.setLayerType(layerIndex, materialIndex === 0 ? "enig" : "silk")
+	}
 	onSourceFileChanged: {
 		sourcePath.text = controller.localPath(sourceFile)
-		if (automaticOutput) outputPath.text = controller.sourceDirectory(sourceFile)
+		if (automaticOutput && controller.layers.length === 0) outputPath.text = controller.sourceDirectory(sourceFile)
 		displayedResult = ""
-		requestPreview()
+		if (!selectingLayer) requestPreview()
 	}
 	Timer {
 		id: previewTimer
@@ -61,7 +113,16 @@ ApplicationWindow {
 		target: controller
 		function onChanged() {
 			if (window.pendingPreview && !controller.busy) previewTimer.restart()
-			if (!window.pendingPreview) window.displayedResult = controller.resultUrl
+			if (!window.pendingPreview)
+				window.displayedResult = controller.compositeUrl
+			if (!controller.busy && controller.selectedSourceUrl !== window.sourceFile.toString()) {
+				window.selectingLayer = true
+				window.sourceFile = controller.selectedSourceUrl
+				sourcePath.text = controller.localPath(window.sourceFile)
+				window.applySelectedParameters()
+				window.selectingLayer = false
+			}
+			window.syncCoordinates()
 		}
 	}
 	component ValueSlider: RowLayout {
@@ -168,6 +229,13 @@ ApplicationWindow {
 			}
 		}
 	}
+	component CoordField: TextField {
+		implicitHeight: 30
+		horizontalAlignment: Text.AlignRight
+		selectByMouse: true
+		enabled: !controller.busy && controller.selectedLayer >= 0
+		validator: DoubleValidator { bottom: 0; decimals: 2; notation: DoubleValidator.StandardNotation }
+	}
 	FileDialog {
 		id: openDialog
 		title: "选择图片"
@@ -224,7 +292,7 @@ ApplicationWindow {
 				selectByMouse: true
 				onEditingFinished: if (text !== controller.localPath(window.sourceFile)) window.sourceFile = controller.fileUrl(text)
 			}
-				AppButton { text: "选择图片"; onClicked: openDialog.open() }
+				AppButton { text: controller.layers.length ? "添加图片" : "选择图片"; onClicked: openDialog.open() }
 			Label { text: "输出路径" }
 			TextField { id: outputPath; Layout.fillWidth: true; selectByMouse: true; onTextEdited: window.automaticOutput = false }
 			AppButton { text: "选择目录"; onClicked: folderDialog.open() }
@@ -337,6 +405,163 @@ ApplicationWindow {
 				Label { anchors.centerIn: parent; text: "请选择或拖入图片"; visible: !window.sourceFile.toString().length }
 				DropArea { anchors.fill: parent; onDropped: drop => { if (drop.hasUrls) window.sourceFile = drop.urls[0] } }
 			}
+			RoundedFrame {
+				Layout.preferredWidth: 250
+				Layout.fillHeight: true
+				ColumnLayout {
+					anchors.fill: parent
+					spacing: 8
+					Rectangle {
+						Layout.fillWidth: true
+						Layout.preferredHeight: 112
+						radius: 8
+						color: "#ffffff"
+						border.width: 1
+						border.color: "#c9cdd2"
+						GridLayout {
+							anchors.fill: parent
+							anchors.margins: 8
+							columns: 4
+							columnSpacing: 5
+							rowSpacing: 6
+							Label { text: "左上 X" }
+							CoordField {
+								id: leftX
+								Layout.fillWidth: true
+								onEditingFinished: controller.setLayerTopLeft(controller.selectedLayer, Number(text), Number(topY.text))
+							}
+							Label { text: "Y" }
+							CoordField {
+								id: topY
+								Layout.fillWidth: true
+								onEditingFinished: controller.setLayerTopLeft(controller.selectedLayer, Number(leftX.text), Number(text))
+							}
+							Label { text: "中心 X" }
+							CoordField {
+								id: centerX
+								Layout.fillWidth: true
+								onEditingFinished: controller.setLayerCenter(controller.selectedLayer, Number(text), Number(centerY.text))
+							}
+							Label { text: "Y" }
+							CoordField {
+								id: centerY
+								Layout.fillWidth: true
+								onEditingFinished: controller.setLayerCenter(controller.selectedLayer, Number(centerX.text), Number(text))
+							}
+							Label {
+								Layout.columnSpan: 4
+								Layout.fillWidth: true
+								text: window.currentLayer ? "当前图层 " + currentLayer.width + " × " + currentLayer.height + " px" : "请选择图层"
+								font.pixelSize: 12
+								color: "#666c74"
+							}
+						}
+					}
+					RowLayout {
+						Layout.fillWidth: true
+						AppButton { text: "添加图层"; Layout.fillWidth: true; enabled: !controller.busy; onClicked: openDialog.open() }
+						AppButton { text: "删除图层"; Layout.fillWidth: true; enabled: !controller.busy && controller.selectedLayer >= 0; onClicked: controller.removeLayer(controller.selectedLayer) }
+					}
+					Rectangle {
+						Layout.fillWidth: true
+						Layout.fillHeight: true
+						radius: 8
+						color: "#eef0f2"
+						border.width: 1
+						border.color: "#c9cdd2"
+						ListView {
+							id: layerList
+							anchors.fill: parent
+							anchors.margins: 7
+							clip: true
+							spacing: 7
+							model: controller.layers
+							delegate: Rectangle {
+								id: layerDelegate
+								required property var modelData
+								required property int index
+								width: layerList.width
+								height: 104
+								radius: 8
+								color: modelData.selected ? "#e7f1ff" : "#ffffff"
+								border.width: 1
+								border.color: modelData.selected ? "#2f80d8" : "#c9cdd2"
+								ColumnLayout {
+								anchors.fill: parent
+								anchors.margins: 7
+								spacing: 4
+								RowLayout {
+									Layout.fillWidth: true
+									Image {
+										Layout.preferredWidth: 42
+										Layout.preferredHeight: 42
+										source: modelData.thumbnail
+										fillMode: Image.PreserveAspectFit
+										smooth: false
+										cache: false
+										MouseArea { anchors.fill: parent; onClicked: window.chooseLayer(index) }
+									}
+									ColumnLayout {
+										Layout.fillWidth: true
+										Label {
+											Layout.fillWidth: true
+											text: modelData.name
+											font.bold: modelData.selected
+											elide: Text.ElideMiddle
+											MouseArea { anchors.fill: parent; onClicked: window.chooseLayer(index) }
+										}
+										CheckBox {
+											text: "显示"
+											checked: modelData.visible
+											enabled: !controller.busy
+											onToggled: controller.setLayerVisible(index, checked)
+										}
+									}
+								}
+								RowLayout {
+									Layout.fillWidth: true
+									ComboBox {
+										Layout.fillWidth: true
+										model: ["沉金", "丝印"]
+										currentIndex: modelData.type === "enig" ? 0 : 1
+										enabled: !controller.busy
+										onActivated: window.setLayerMaterial(layerDelegate.index, currentIndex)
+									}
+									AppButton { text: "↑"; implicitWidth: 30; enabled: !controller.busy && index > 0; onClicked: controller.moveLayer(index, -1) }
+									AppButton { text: "↓"; implicitWidth: 30; enabled: !controller.busy && index + 1 < controller.layers.length; onClicked: controller.moveLayer(index, 1) }
+								}
+							}
+						}
+						Label {
+							anchors.centerIn: parent
+							visible: controller.layers.length === 0
+							text: "添加图片后在这里管理图层"
+							color: "#777d85"
+							wrapMode: Text.WordWrap
+							width: parent.width - 20
+								horizontalAlignment: Text.AlignHCenter
+							}
+						}
+					}
+					Rectangle {
+						Layout.fillWidth: true
+						Layout.preferredHeight: 82
+						radius: 8
+						color: "#ffffff"
+						border.width: 1
+						border.color: "#c9cdd2"
+						GridLayout {
+							anchors.fill: parent
+							anchors.margins: 9
+							columns: 2
+							Label { text: "总体 X 大小" }
+							Label { text: controller.canvasWidth + " px"; font.bold: true; Layout.alignment: Qt.AlignRight }
+							Label { text: "总体 Y 大小" }
+							Label { text: controller.canvasHeight + " px"; font.bold: true; Layout.alignment: Qt.AlignRight }
+						}
+					}
+				}
+			}
 		}
 		RowLayout {
 			Layout.fillWidth: true
@@ -347,6 +572,11 @@ ApplicationWindow {
 				text: "保存黑白图片"
 				enabled: !controller.busy && !window.pendingPreview && controller.resultUrl.length > 0
 				onClicked: { saveDialog.selectedFile = controller.outputFile(window.sourceFile, outputPath.text); saveDialog.open() }
+			}
+			AppButton {
+				text: "生成PCB文件"
+				enabled: !controller.busy && !window.pendingPreview && controller.hasExportableLayers
+				onClicked: controller.generatePcb(window.sourceFile, outputPath.text)
 			}
 		}
 		Label { text: window.pendingPreview ? "正在更新预览…" : controller.status; Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: 13 }

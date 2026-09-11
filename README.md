@@ -1,6 +1,6 @@
 # easyeda-arknights-enig
 
-将普通图片处理为纯黑白图，再转换成可导入嘉立创EDA专业版的沉金 PCB 图案工程。
+将普通图片处理为纯黑白图，再转换成可导入嘉立创EDA专业版的沉金和丝印 PCB 图案工程。
 
 项目包含两个相互独立的步骤：
 
@@ -11,8 +11,8 @@
 
 ## C++ / Qt Quick 新版
 
-C++ 新版已完成二值化核心、实时预览和 Try All 多算法对比；旧版 Python 界面和 PCB 导出器保持可用。
-构建和运行方法见 [新版说明](native/README.md)。
+已开始逐步重构。C++ 新版已实现 Try All、多图片图层、沉金/丝印类型选择和合成导出；旧版 Python 界面和 PCB 导出器保持可用。
+构建、运行和迁移范围见 [新版说明](native/README.md)。
 
 ## 项目结构
 
@@ -121,14 +121,14 @@ binarize_file("input.png", "output.png", options)
 
 ## 生成沉金 PCB 工程
 
-`img2enig.py` 只接受像素值为 `0` 或 `255` 的纯黑白图片。黑色区域代表需要露金的完整面积，白色区域不生成铜箔或阻焊开窗。
+`img2enig.py` 只接受像素值为 `0` 或 `255` 的纯黑白图片。默认情况下黑色区域代表需要露金的完整面积；使用 `--source-type silk` 时黑色区域代表丝印。
 
 转换过程：
 
 1. 将图片向下的 Y 轴转换为 PCB 向上的 Y 轴，同时保持左右方向不变；
 2. 将连续黑色像素无损合并为填充矩形；
-3. 在顶层或底层铜层生成相应 `FILL`；
-4. 在对应阻焊层生成完全重合的开窗；
+3. 将沉金掩膜写入顶层或底层铜层，并在对应阻焊层生成完全重合的开窗；
+4. 将可选丝印掩膜写入顶层或底层丝印层；
 5. 生成矩形板框并封装为 `.epro2`。
 
 基本用法：
@@ -171,6 +171,17 @@ binarize_file("input.png", "output.png", options)
 
 - 顶面使用顶层铜 `1` 和顶层阻焊 `5`；
 - 底面使用底层铜 `2` 和底层阻焊 `6`。
+
+将主图片作为丝印，或为沉金图片增加一张同尺寸的丝印掩膜：
+
+```bash
+.venv/bin/python img2enig.py silk.binary.png --source-type silk
+.venv/bin/python img2enig.py enig.binary.png --silk silk.binary.png
+```
+
+- 顶面丝印使用 Layer `3`；
+- 底面丝印使用 Layer `4`；
+- `--silk` 图片必须与主图片像素尺寸一致。
 
 设置板边或取消板框：
 

@@ -71,6 +71,36 @@ class Img2EnigTests(unittest.TestCase):
                     self.assertEqual(result["validation"]["fillLayers"], layers)
                     self.assertEqual(result["primitives"], 5)
 
+    def test_silkscreen_only_and_combined_artwork_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.make_asymmetric_image(directory)
+            silk_only = convert(
+                source=source,
+                output=Path(directory) / "silk.epro2",
+                width_mm=4.0,
+                height_mm=3.0,
+                side="top",
+                margin_mm=1.0,
+                include_outline=True,
+                project_name=None,
+                source_type="silk",
+            )
+            self.assertEqual(silk_only["validation"]["fillLayers"], [3])
+            self.assertEqual(silk_only["primitives"], 3)
+
+            combined = convert(
+                source=source,
+                output=Path(directory) / "combined.epro2",
+                width_mm=4.0,
+                height_mm=3.0,
+                side="top",
+                margin_mm=1.0,
+                include_outline=True,
+                project_name=None,
+                silk_source=source,
+            )
+            self.assertEqual(combined["validation"]["fillLayers"], [1, 3, 5])
+            self.assertEqual(combined["primitives"], 7)
 
 if __name__ == "__main__":
     unittest.main()
