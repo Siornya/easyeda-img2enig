@@ -47,7 +47,7 @@ ApplicationWindow {
 	palette.placeholderText: mutedTextColor
 
 	function parameters() {
-		return { threshold: threshold.value, blockSize: block.value,
+		return { method: method.currentIndex, threshold: threshold.value, blockSize: block.value,
 			adaptiveC: adaptiveC.value, localK: localK.value / 100,
 			exposure: exposure.value, contrast: contrast.value, gamma: gamma.value / 100,
 			denoiseMethod: denoise.currentIndex, denoiseStrength: strength.value,
@@ -326,8 +326,9 @@ ApplicationWindow {
 							Label { text: "方法" }
 							ComboBox {
 								id: method
+								objectName: "methodSelector"
 								Layout.fillWidth: true
-								model: ["固定阈值", "自适应阈值", "Otsu 阈值", "Sauvola 阈值", "Wolf 阈值", "Nick 阈值", "Bernsen 阈值"]
+								model: ["固定阈值", "自适应阈值", "Otsu 阈值", "Triangle 阈值", "Li 阈值", "Sauvola 阈值", "Wolf 阈值", "Bernsen 阈值"]
 								currentIndex: 1
 								onActivated: window.requestPreview()
 							}
@@ -614,8 +615,8 @@ ApplicationWindow {
 		title: "Try All · 多算法对比"
 		modal: true
 		anchors.centerIn: parent
-		width: Math.min(window.width - 40, 1000)
-		height: Math.min(window.height - 40, 750)
+		width: Math.min(window.width - 30, 1220)
+		height: Math.min(window.height - 30, 770)
 		onClosed: if (!applied) window.requestPreview()
 		background: Rectangle {
 			radius: 10
@@ -632,7 +633,57 @@ ApplicationWindow {
 		}
 		ColumnLayout {
 			anchors.fill: parent
-			Label { text: "使用当前预处理设置。选择方案后，返回主界面查看完整分辨率结果。"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+			Label { text: "调整参数后点击重新比较。选择方案后，返回主界面查看完整分辨率结果。"; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+			RoundedFrame {
+				Layout.fillWidth: true
+				RowLayout {
+					anchors.fill: parent
+					spacing: 8
+					Label { text: "阈值" }
+					SpinBox {
+						from: 0
+						to: 255
+						value: Math.round(threshold.value)
+						editable: true
+						onValueModified: threshold.value = value
+					}
+					Label { text: "局部窗口" }
+					SpinBox {
+						from: 3
+						to: 101
+						stepSize: 2
+						value: Math.round(block.value)
+						editable: true
+						onValueModified: {
+							if (value % 2 === 0) value += value < to ? 1 : -1
+							block.value = value
+						}
+					}
+					Label { text: "自适应 C" }
+					SpinBox {
+						from: -100
+						to: 100
+						value: Math.round(adaptiveC.value)
+						editable: true
+						onValueModified: adaptiveC.value = value
+					}
+					Label { text: "局部 k × 100" }
+					SpinBox {
+						from: -100
+						to: 100
+						value: Math.round(localK.value)
+						editable: true
+						onValueModified: localK.value = value
+					}
+					Item { Layout.fillWidth: true }
+					AppButton {
+						text: "重新比较"
+						accent: true
+						enabled: !controller.busy
+						onClicked: controller.compare(window.sourceFile, window.parameters())
+					}
+				}
+			}
 			Label { text: controller.status; visible: controller.busy || controller.candidates.length === 0; Layout.fillWidth: true; wrapMode: Text.WordWrap }
 			ScrollView {
 				id: comparisonScroll
@@ -641,18 +692,18 @@ ApplicationWindow {
 				clip: true
 				GridLayout {
 					width: comparisonScroll.availableWidth
-					columns: 3
+					columns: comparisonScroll.availableWidth >= 820 ? 2 : 1
 					Repeater {
 						model: controller.candidates
 						RoundedFrame {
 							required property var modelData
 							required property int index
 							Layout.fillWidth: true
-							Layout.preferredWidth: 240
+							Layout.preferredWidth: comparisonScroll.availableWidth >= 820 ? 500 : comparisonScroll.availableWidth
 							ColumnLayout {
 								anchors.fill: parent
 								Label { text: modelData.name; font.bold: true }
-								Image { source: modelData.image; Layout.fillWidth: true; Layout.preferredHeight: 130; fillMode: Image.PreserveAspectFit; smooth: false; cache: false }
+								Image { source: modelData.image; Layout.fillWidth: true; Layout.preferredHeight: 250; fillMode: Image.PreserveAspectFit; smooth: false; cache: false }
 								Label { text: modelData.parameters; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WordWrap }
 								Label { text: modelData.error; visible: text.length > 0; Layout.fillWidth: true; wrapMode: Text.WordWrap }
 								AppButton { text: "应用 " + modelData.name; accent: true; enabled: !controller.busy && modelData.error.length === 0; onClicked: { method.currentIndex = index; window.showingOriginal = false; comparison.applied = true; comparison.close(); controller.apply(index) } }

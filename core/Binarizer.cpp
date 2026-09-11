@@ -11,9 +11,10 @@ std::string_view name(Method method) {
 	case Method::Fixed: return "Fixed";
 	case Method::Adaptive: return "Adaptive";
 	case Method::Otsu: return "Otsu";
+	case Method::Triangle: return "Triangle";
+	case Method::Li: return "Li";
 	case Method::Sauvola: return "Sauvola";
 	case Method::Wolf: return "Wolf";
-	case Method::Nick: return "Nick";
 	case Method::Bernsen: return "Bernsen";
 	}
 	throw std::invalid_argument("Unknown threshold method");
@@ -103,12 +104,59 @@ cv::Mat preprocess(const cv::Mat& source, const Options& o) {
 	}
 	return gray;
 }
+static double liThreshold(const cv::Mat& gray) {
+	std::array<double, 256> histogram{};
+	for (int y = 0; y < gray.rows; ++y) {
+		const auto* line = gray.ptr<unsigned char>(y);
+		for (int x = 0; x < gray.cols; ++x) ++histogram[line[x]];
+	}
+	int minimum = 0;
+	while (minimum < 255 && histogram[minimum] == 0) ++minimum;
+	int maximum = 255;
+	while (maximum > 0 && histogram[maximum] == 0) --maximum;
+	if (minimum == maximum) return minimum;
+	double total = 0;
+	double sum = 0;
+	for (int level = minimum; level <= maximum; ++level) {
+		total += histogram[level];
+		sum += histogram[level] * (level - minimum);
+	}
+	double next = sum / total;
+	for (int iteration = 0; iteration < 100; ++iteration) {
+		const double current = next;
+		double backgroundCount = 0;
+		double backgroundSum = 0;
+		double foregroundCount = 0;
+		double foregroundSum = 0;
+		for (int level = minimum; level <= maximum; ++level) {
+			const double shifted = level - minimum;
+			if (shifted <= current) {
+				backgroundCount += histogram[level];
+				backgroundSum += histogram[level] * shifted;
+			} else {
+				foregroundCount += histogram[level];
+				foregroundSum += histogram[level] * shifted;
+			}
+		}
+		if (backgroundCount == 0 || foregroundCount == 0) break;
+		const double backgroundMean = backgroundSum / backgroundCount;
+		const double foregroundMean = foregroundSum / foregroundCount;
+		if (backgroundMean <= 0 || foregroundMean <= 0) break;
+		const double denominator = std::log(backgroundMean) - std::log(foregroundMean);
+		if (std::abs(denominator) < 1e-12) break;
+		next = (backgroundMean - foregroundMean) / denominator;
+		if (!std::isfinite(next) || std::abs(next - current) <= 0.5) break;
+	}
+	return next + minimum;
+}
 cv::Mat threshold(const cv::Mat& gray, const Options& o) {
 	validate(o);
 	if (gray.empty() || gray.type() != CV_8UC1) throw std::invalid_argument("Expected grayscale image");
 	cv::Mat binary;
 	if (o.method == Method::Fixed) cv::threshold(gray, binary, o.threshold, 255, cv::THRESH_BINARY);
 	else if (o.method == Method::Otsu) cv::threshold(gray, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+	else if (o.method == Method::Triangle) cv::threshold(gray, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_TRIANGLE);
+	else if (o.method == Method::Li) cv::threshold(gray, binary, liThreshold(gray), 255, cv::THRESH_BINARY);
 	else if (o.method == Method::Adaptive)
 		cv::adaptiveThreshold(gray, binary, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, o.blockSize, o.adaptiveC);
 	else {
@@ -126,12 +174,6 @@ cv::Mat threshold(const cv::Mat& gray, const Options& o) {
 			cv::minMaxLoc(deviation, nullptr, &maximum);
 			cv::minMaxLoc(source, &minimum);
 			thresholdMap = mean + o.localK * (deviation / std::max(maximum, 1e-6) - 1).mul(mean - minimum);
-			break;
-		}
-		case Method::Nick: {
-			cv::Mat root;
-			cv::sqrt(variance + mean.mul(mean), root);
-			thresholdMap = mean - std::abs(o.localK) * root;
 			break;
 		}
 		case Method::Bernsen: {

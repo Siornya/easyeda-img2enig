@@ -36,7 +36,7 @@ int main(int argc, char* argv[]) {
 	if (smoke >= 0 && smoke + 1 < arguments.size()) {
 		QTimer::singleShot(15000, &app, [&app] { app.exit(2); });
 		QObject::connect(&controller, &Controller::changed, &app, [&] {
-			if (controller.busy() || controller.candidates().size() != 7) return;
+			if (controller.busy() || controller.candidates().size() != int(binarizer::methods.size())) return;
 			if (controller.resultUrl().isEmpty()) controller.apply(2);
 			else QTimer::singleShot(250, &app, [&] {
 				auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
@@ -48,7 +48,7 @@ int main(int argc, char* argv[]) {
 	if (comparisonSmoke >= 0 && comparisonSmoke + 1 < arguments.size()) {
 		QTimer::singleShot(15000, &app, [&app] { app.exit(2); });
 		QObject::connect(&controller, &Controller::changed, &app, [&] {
-			if (controller.busy() || controller.candidates().size() != 7) return;
+			if (controller.busy() || controller.candidates().size() != int(binarizer::methods.size())) return;
 			QTimer::singleShot(250, &app, [&] {
 				auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
 				const bool saved = window && window->grabWindow().save(arguments[comparisonSmoke + 1]);

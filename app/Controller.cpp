@@ -134,6 +134,13 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 	}
 	rows.clear();
 	binarizer::Options requestedSettings;
+	int methodIndex = int(binarizer::Method::Adaptive);
+	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size()))
+		methodIndex = int(artworkLayers[selectedLayer].settings.method);
+	methodIndex = p.value("method", methodIndex).toInt();
+	if (singleMethod >= 0) methodIndex = singleMethod;
+	if (methodIndex >= 0 && methodIndex < int(binarizer::methods.size()))
+		requestedSettings.method = binarizer::methods[methodIndex];
 	requestedSettings.threshold = p.value("threshold", 127).toInt();
 	requestedSettings.blockSize = p.value("blockSize", 31).toInt();
 	requestedSettings.adaptiveC = p.value("adaptiveC", 5).toDouble();
@@ -159,7 +166,9 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 		|| artworkLayers[selectedLayer].sourcePath != sourcePath;
 	const int targetLayerId = createLayer ? 0 : artworkLayers[selectedLayer].id;
 	active = true;
-	message = singleMethod < 0 ? QStringLiteral("正在生成 7 种方案…") : QStringLiteral("正在更新预览…");
+	message = singleMethod < 0
+		? QStringLiteral("正在生成 %1 种方案…").arg(int(binarizer::methods.size()))
+		: QStringLiteral("正在更新预览…");
 	cancelled = std::make_shared<std::atomic_bool>(false);
 	const auto stop = cancelled;
 	auto options = requestedSettings;
@@ -230,11 +239,12 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				const QString id = QString::number(revision) + "/" + QString::number(i);
 				images->put(id, batch.previews[i]);
 				QString parameters;
-				if (method == binarizer::Method::Otsu) parameters = QStringLiteral("自动阈值");
+				if (method == binarizer::Method::Otsu || method == binarizer::Method::Triangle
+					|| method == binarizer::Method::Li) parameters = QStringLiteral("自动阈值");
 				else if (method == binarizer::Method::Fixed) parameters = QStringLiteral("阈值 %1").arg(settings.threshold);
 				else if (method == binarizer::Method::Adaptive) parameters = QStringLiteral("窗口 %1 · C %2").arg(settings.blockSize).arg(settings.adaptiveC);
 				else if (method == binarizer::Method::Bernsen) parameters = QStringLiteral("窗口 %1 · 回退阈值 %2").arg(settings.blockSize).arg(settings.threshold);
-				else parameters = QStringLiteral("窗口 %1 · k %2").arg(settings.blockSize).arg(method == binarizer::Method::Nick ? -std::abs(settings.localK) : settings.localK);
+				else parameters = QStringLiteral("窗口 %1 · k %2").arg(settings.blockSize).arg(settings.localK);
 				rows.append(QVariantMap{{"name", QString::fromUtf8(binarizer::name(method).data())},
 					{"image", batch.previews[i].isNull() ? QString() : "image://results/" + id},
 					{"parameters", parameters}, {"error", batch.errors[i]}});

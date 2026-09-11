@@ -2,6 +2,7 @@
 #include <opencv2/imgproc.hpp>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 
 static void check(bool condition, const char* message) {
 	if (!condition) throw std::runtime_error(message);
@@ -27,6 +28,13 @@ int main() {
 			}
 		}
 		check(cv::countNonZero(source != original) == 0, "Source was mutated");
+		cv::Mat liSample(1, 100, CV_8UC1);
+		int offset = 0;
+		for (const auto [level, count] : {std::pair{0, 20}, std::pair{20, 40},
+			std::pair{60, 10}, std::pair{120, 15}, std::pair{200, 10}, std::pair{250, 5}})
+			for (int index = 0; index < count; ++index) liSample.at<unsigned char>(offset++) = level;
+		options.method = Method::Li;
+		check(cv::countNonZero(process(liSample, options)) == 30, "Li threshold is incorrect");
 		options.method = Method::Fixed;
 		options.maxDimension = 64;
 		check(process(source, options).size() == cv::Size(64, 20), "Preview dimensions incorrect");

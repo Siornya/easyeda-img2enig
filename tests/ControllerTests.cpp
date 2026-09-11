@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
 		check(previewSize == source.size(), "Main preview lost resolution");
 		controller.compare(url, {});
 		wait(controller);
-		check(controller.candidates().size() == 7, "Missing candidates");
+		check(controller.candidates().size() == int(binarizer::methods.size()), "Missing candidates");
 		for (const auto& candidate : controller.candidates()) {
 			check(candidate.toMap().value("error").toString().isEmpty(), "Candidate failed");
 			const auto key = candidate.toMap().value("image").toString().mid(QString("image://results/").size());
@@ -89,10 +89,12 @@ int main(int argc, char** argv) {
 			for (int x = 40; x < 360; ++x) signature.setPixelColor(x, y, QColor(231, 48, 62));
 		const auto signaturePath = directory.filePath(QStringLiteral("签名.png"));
 		check(signature.save(signaturePath), "Cannot create layer fixture");
-		controller.preview(QUrl::fromLocalFile(signaturePath), {}, 1);
+		controller.preview(QUrl::fromLocalFile(signaturePath), {}, 4);
 		wait(controller);
 		check(controller.layerRows().size() == 2, "Second image did not create a layer");
 		check(controller.selectedLayerIndex() == 0, "New layer was not selected");
+		check(controller.selectedParameters().value("method").toInt() == 4,
+			"Preview method was not saved to the second layer");
 		check(controller.canvasWidth() == 1200 && controller.canvasHeight() == 800, "Canvas size changed unexpectedly");
 		const auto centeredLayer = controller.layerRows()[0].toMap();
 		check(centeredLayer.value("leftX").toDouble() == 400.0, "New layer was not horizontally centered");
@@ -117,6 +119,24 @@ int main(int argc, char** argv) {
 		check(composite.pixelColor(0, 0) == QColor(QStringLiteral("#164d73")), "Solder-mask preview color did not change");
 		controller.setLayerVisible(1, true);
 		controller.selectLayer(1);
+		check(controller.selectedParameters().value("method").toInt() == 2,
+			"First layer did not restore its selected method");
+		{
+			QQmlApplicationEngine engine;
+			engine.rootContext()->setContextProperty("controller", &controller);
+			engine.load(QUrl::fromLocalFile(QStringLiteral(BINARIZER_SOURCE_DIR "/qml/Main.qml")));
+			check(!engine.rootObjects().isEmpty(), "Main QML scene failed to reload");
+			auto* selector = engine.rootObjects().front()->findChild<QObject*>(QStringLiteral("methodSelector"));
+			check(selector, "Method selector is missing");
+			check(QMetaObject::invokeMethod(engine.rootObjects().front(), "chooseLayer",
+				Q_ARG(QVariant, QVariant(0))), "Cannot select the second layer from QML");
+			check(selector->property("currentIndex").toInt() == 4,
+				"Second layer method was not restored in QML");
+			check(QMetaObject::invokeMethod(engine.rootObjects().front(), "chooseLayer",
+				Q_ARG(QVariant, QVariant(1))), "Cannot return to the first layer from QML");
+			check(selector->property("currentIndex").toInt() == 2,
+				"First layer method was not restored in QML");
+		}
 		check(controller.selectedSourceUrl() == url.toString(), "Layer selection did not restore its source");
 		check(controller.status().contains(path), "Layer selection did not report its source path");
 		controller.generatePcb(url, directory.path());

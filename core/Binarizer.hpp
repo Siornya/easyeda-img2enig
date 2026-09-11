@@ -4,9 +4,9 @@
 #include <string_view>
 
 namespace binarizer {
-enum class Method { Fixed, Adaptive, Otsu, Sauvola, Wolf, Nick, Bernsen };
+enum class Method { Fixed, Adaptive, Otsu, Triangle, Li, Sauvola, Wolf, Bernsen };
 inline constexpr std::array methods {Method::Fixed, Method::Adaptive, Method::Otsu,
-	Method::Sauvola, Method::Wolf, Method::Nick, Method::Bernsen};
+	Method::Triangle, Method::Li, Method::Sauvola, Method::Wolf, Method::Bernsen};
 std::string_view name(Method method);
 struct Options {
 	Method method = Method::Adaptive;
