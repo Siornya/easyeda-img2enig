@@ -17,8 +17,34 @@ ApplicationWindow {
 	property bool showingOriginal: false
 	property bool pendingPreview: false
 	property bool selectingLayer: false
+	readonly property bool darkMode: Application.styleHints.colorScheme === Qt.Dark
 	property string displayedResult: ""
 	property var currentLayer: controller.selectedLayer >= 0 ? controller.layers[controller.selectedLayer] : null
+	readonly property color pageColor: darkMode ? "#1f2329" : "#f0f1f3"
+	readonly property color surfaceColor: darkMode ? "#292e36" : "#f5f6f8"
+	readonly property color raisedColor: darkMode ? "#323842" : "#ffffff"
+	readonly property color borderColor: darkMode ? "#4d5663" : "#c5c9ce"
+	readonly property color textColor: darkMode ? "#e8ebef" : "#20242a"
+	readonly property color mutedTextColor: darkMode ? "#aeb6c2" : "#666c74"
+	readonly property color trackColor: darkMode ? "#505966" : "#cfd4da"
+	readonly property color buttonColor: darkMode ? "#343b45" : "#eef0f2"
+	readonly property color buttonHoverColor: darkMode ? "#404956" : "#f8f9fa"
+	readonly property color buttonDownColor: darkMode ? "#2b3139" : "#d8dce1"
+	readonly property color disabledColor: darkMode ? "#292e35" : "#e6e8eb"
+	readonly property color disabledTextColor: darkMode ? "#737b86" : "#90959c"
+	readonly property color selectedColor: darkMode ? "#263e5c" : "#e7f1ff"
+	color: pageColor
+	palette.window: pageColor
+	palette.windowText: textColor
+	palette.base: darkMode ? "#242930" : "#ffffff"
+	palette.alternateBase: surfaceColor
+	palette.text: textColor
+	palette.button: buttonColor
+	palette.buttonText: textColor
+	palette.highlight: "#2f80d8"
+	palette.highlightedText: "#ffffff"
+	palette.mid: borderColor
+	palette.placeholderText: mutedTextColor
 
 	function parameters() {
 		return { threshold: threshold.value, blockSize: block.value,
@@ -143,7 +169,7 @@ ApplicationWindow {
 				width: slider.availableWidth
 				height: 4
 				radius: 2
-				color: "#cfd4da"
+				color: window.trackColor
 				Rectangle {
 					width: slider.visualPosition * parent.width
 					height: parent.height
@@ -157,9 +183,9 @@ ApplicationWindow {
 				implicitWidth: 16
 				implicitHeight: 16
 				radius: 8
-				color: slider.pressed ? "#eaf3ff" : "white"
+				color: slider.pressed ? (window.darkMode ? "#334d6d" : "#eaf3ff") : window.raisedColor
 				border.width: 1
-				border.color: slider.hovered ? "#2f80ed" : "#9299a2"
+				border.color: slider.hovered ? "#2f80ed" : window.borderColor
 			}
 		}
 		Label {
@@ -179,25 +205,25 @@ ApplicationWindow {
 			y: 0
 			text: groupControl.title
 			font.bold: true
-			color: "#292d33"
+			color: window.textColor
 		}
 		background: Rectangle {
 			y: 22
 			width: groupControl.width
 			height: groupControl.height - y
 			radius: 8
-			color: "#f5f6f8"
+			color: window.surfaceColor
 			border.width: 1
-			border.color: "#c5c9ce"
+			border.color: window.borderColor
 		}
 	}
 	component RoundedFrame: Frame {
 		padding: 9
 		background: Rectangle {
 			radius: 9
-			color: "#f5f6f8"
+			color: window.surfaceColor
 			border.width: 1
-			border.color: "#c5c9ce"
+			border.color: window.borderColor
 		}
 	}
 	component AppButton: Button {
@@ -210,7 +236,7 @@ ApplicationWindow {
 		contentItem: Text {
 			text: buttonControl.text
 			font: buttonControl.font
-			color: !buttonControl.enabled ? "#90959c" : buttonControl.accent ? "white" : "#20242a"
+			color: !buttonControl.enabled ? window.disabledTextColor : buttonControl.accent ? "white" : window.textColor
 			horizontalAlignment: Text.AlignHCenter
 			verticalAlignment: Text.AlignVCenter
 			elide: Text.ElideRight
@@ -218,11 +244,11 @@ ApplicationWindow {
 		background: Rectangle {
 			radius: 7
 			border.width: 1
-			border.color: !buttonControl.enabled ? "#c9cdd2" : buttonControl.accent ? "#246ac1" : buttonControl.hovered ? "#8b939c" : "#aeb4bb"
+			border.color: !buttonControl.enabled ? window.borderColor : buttonControl.accent ? "#246ac1" : buttonControl.hovered ? (window.darkMode ? "#687483" : "#8b939c") : window.borderColor
 			color: {
-				if (!buttonControl.enabled) return "#e6e8eb"
+				if (!buttonControl.enabled) return window.disabledColor
 				if (buttonControl.accent) return buttonControl.down ? "#2368ba" : buttonControl.hovered ? "#3c8bea" : "#2f80d8"
-				return buttonControl.down ? "#d8dce1" : buttonControl.hovered ? "#f8f9fa" : "#eef0f2"
+				return buttonControl.down ? window.buttonDownColor : buttonControl.hovered ? window.buttonHoverColor : window.buttonColor
 			}
 		}
 	}
@@ -263,9 +289,9 @@ ApplicationWindow {
 		standardButtons: Dialog.Close
 		background: Rectangle {
 			radius: 10
-			color: "#f7f8fa"
+			color: window.raisedColor
 			border.width: 1
-			border.color: "#bfc4ca"
+			border.color: window.borderColor
 		}
 		GridLayout {
 			columns: 2
@@ -397,9 +423,9 @@ ApplicationWindow {
 						Layout.fillWidth: true
 						Layout.preferredHeight: 112
 						radius: 8
-						color: "#ffffff"
+						color: window.raisedColor
 						border.width: 1
-						border.color: "#c9cdd2"
+						border.color: window.borderColor
 						GridLayout {
 							anchors.fill: parent
 							anchors.margins: 8
@@ -435,7 +461,7 @@ ApplicationWindow {
 								Layout.fillWidth: true
 								text: window.currentLayer ? "当前图层 " + currentLayer.width + " × " + currentLayer.height + " px" : "请选择图层"
 								font.pixelSize: 12
-								color: "#666c74"
+								color: window.mutedTextColor
 							}
 						}
 					}
@@ -448,9 +474,9 @@ ApplicationWindow {
 						Layout.fillWidth: true
 						Layout.fillHeight: true
 						radius: 8
-						color: "#eef0f2"
+						color: window.surfaceColor
 						border.width: 1
-						border.color: "#c9cdd2"
+						border.color: window.borderColor
 						ListView {
 							id: layerList
 							anchors.fill: parent
@@ -465,9 +491,9 @@ ApplicationWindow {
 								width: layerList.width
 								height: 104
 								radius: 8
-								color: modelData.selected ? "#e7f1ff" : "#ffffff"
+								color: modelData.selected ? window.selectedColor : window.raisedColor
 								border.width: 1
-								border.color: modelData.selected ? "#2f80d8" : "#c9cdd2"
+								border.color: modelData.selected ? "#2f80d8" : window.borderColor
 								ColumnLayout {
 								anchors.fill: parent
 								anchors.margins: 7
@@ -518,7 +544,7 @@ ApplicationWindow {
 							anchors.centerIn: parent
 							visible: controller.layers.length === 0
 							text: "添加图片后在这里管理图层"
-							color: "#777d85"
+							color: window.mutedTextColor
 							wrapMode: Text.WordWrap
 							width: parent.width - 20
 								horizontalAlignment: Text.AlignHCenter
@@ -529,9 +555,9 @@ ApplicationWindow {
 						Layout.fillWidth: true
 						Layout.preferredHeight: 122
 						radius: 8
-						color: "#ffffff"
+						color: window.raisedColor
 						border.width: 1
-						border.color: "#c9cdd2"
+						border.color: window.borderColor
 						GridLayout {
 							anchors.fill: parent
 							anchors.margins: 9
@@ -593,9 +619,9 @@ ApplicationWindow {
 		onClosed: if (!applied) window.requestPreview()
 		background: Rectangle {
 			radius: 10
-			color: "#f7f8fa"
+			color: window.raisedColor
 			border.width: 1
-			border.color: "#bfc4ca"
+			border.color: window.borderColor
 		}
 		footer: DialogButtonBox {
 			AppButton {

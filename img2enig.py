@@ -706,7 +706,7 @@ def convert_layers(
     width_mm: float | None = None,
     height_mm: float | None = None,
     project_name: str | None = None,
-    solder_mask_color: str = "#264F3A",
+    solder_mask_color: str = "#ECEBE6",
 ) -> dict[str, Any]:
     layers = prepare_positioned_layers(specs, canvas_width_px, canvas_height_px)
     physical_width = 50.0 if width_mm is None else width_mm
@@ -849,7 +849,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             project_name=setting("project_name", args.project_name),
             solder_mask_color=setting(
-                "solder_mask_color", args.solder_mask_color, "#264F3A"
+                "solder_mask_color", args.solder_mask_color, "#ECEBE6"
             ),
         )
         print(json.dumps(result, ensure_ascii=False, indent=4))

@@ -40,6 +40,7 @@ int main(int argc, char** argv) {
 		check(controller.fileUrl(path) == url, "Local path conversion failed");
 		check(controller.sourceDirectory(url) == directory.path(), "Source directory failed");
 		check(controller.outputFile(url, {}).toLocalFile().endsWith("输入.binary.png"), "Automatic output name failed");
+		check(controller.solderMaskColor() == QStringLiteral("white"), "Default solder mask is not white");
 		controller.preview(url, {}, 1);
 		wait(controller);
 		check(!controller.resultUrl().isEmpty(), "Main preview failed");

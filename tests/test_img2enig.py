@@ -151,6 +151,15 @@ class Img2EnigTests(unittest.TestCase):
                 ])
             self.assertEqual(exit_code, 0)
             self.assertTrue(output.is_file())
+            records = self.read_records(output)
+            mask_colors = {
+                inner["activeColor"]
+                for outer, inner in records["all"]
+                if outer["type"] == "LAYER" and inner["layerType"] in {
+                    "TOP_SOLDER_MASK", "BOT_SOLDER_MASK"
+                }
+            }
+            self.assertEqual(mask_colors, {"#ECEBE6"})
 
     def test_missing_layer_input_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

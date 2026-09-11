@@ -113,7 +113,7 @@ private:
 	int nextLayerId = 1;
 	int minimumCanvasWidth = 0;
 	int minimumCanvasHeight = 0;
-	QString maskColor = QStringLiteral("green");
+	QString maskColor = QStringLiteral("white");
 	cv::Mat sourceImage;
 	QImage output;
 	binarizer::Options settings;
