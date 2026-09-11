@@ -329,12 +329,15 @@ void Controller::apply(int index) {
 }
 
 void Controller::selectLayer(int index) {
-	if (active || index < 0 || index >= int(artworkLayers.size()) || index == selectedLayer) return;
-	selectedLayer = index;
-	rows.clear();
-	loadSelectedLayer();
-	refreshLayerPresentation();
-	message = QStringLiteral("已选择图层：%1").arg(artworkLayers[index].name);
+	if (active || index < 0 || index >= int(artworkLayers.size())) return;
+	if (index != selectedLayer) {
+		selectedLayer = index;
+		rows.clear();
+		loadSelectedLayer();
+		refreshLayerPresentation();
+	}
+	const auto& layer = artworkLayers[index];
+	message = QStringLiteral("已选择图层“%1”：%2").arg(layer.name, layer.sourcePath);
 	emit changed();
 }
 

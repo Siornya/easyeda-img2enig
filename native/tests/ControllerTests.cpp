@@ -117,6 +117,7 @@ int main(int argc, char** argv) {
 		controller.setLayerVisible(1, true);
 		controller.selectLayer(1);
 		check(controller.selectedSourceUrl() == url.toString(), "Layer selection did not restore its source");
+		check(controller.status().contains(path), "Layer selection did not report its source path");
 		controller.generatePcb(url, directory.path());
 		wait(controller);
 		const auto pcbPath = directory.filePath(QStringLiteral("输入.epro2"));

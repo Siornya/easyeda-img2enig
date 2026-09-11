@@ -41,7 +41,6 @@ ApplicationWindow {
 		controller.selectLayer(index)
 		applySelectedParameters()
 		sourceFile = controller.selectedSourceUrl
-		sourcePath.text = controller.localPath(sourceFile)
 		displayedResult = controller.compositeUrl
 		showingOriginal = false
 		selectingLayer = false
@@ -94,7 +93,6 @@ ApplicationWindow {
 		controller.setLayerType(layerIndex, materialIndex === 0 ? "enig" : "silk")
 	}
 	onSourceFileChanged: {
-		sourcePath.text = controller.localPath(sourceFile)
 		if (automaticOutput && controller.layers.length === 0) outputPath.text = controller.sourceDirectory(sourceFile)
 		displayedResult = ""
 		if (!selectingLayer) requestPreview()
@@ -118,7 +116,6 @@ ApplicationWindow {
 			if (!controller.busy && controller.selectedSourceUrl !== window.sourceFile.toString()) {
 				window.selectingLayer = true
 				window.sourceFile = controller.selectedSourceUrl
-				sourcePath.text = controller.localPath(window.sourceFile)
 				window.applySelectedParameters()
 				window.selectingLayer = false
 			}
@@ -282,21 +279,6 @@ ApplicationWindow {
 		anchors.fill: parent
 		anchors.margins: 10
 		spacing: 8
-		GridLayout {
-			columns: 3
-			Layout.fillWidth: true
-				Label { text: "当前图片" }
-			TextField {
-				id: sourcePath
-				Layout.fillWidth: true
-				selectByMouse: true
-				onEditingFinished: if (text !== controller.localPath(window.sourceFile)) window.sourceFile = controller.fileUrl(text)
-			}
-				AppButton { text: controller.layers.length ? "添加图片" : "选择图片"; onClicked: openDialog.open() }
-			Label { text: "输出路径" }
-			TextField { id: outputPath; Layout.fillWidth: true; selectByMouse: true; onTextEdited: window.automaticOutput = false }
-			AppButton { text: "选择目录"; onClicked: folderDialog.open() }
-		}
 		RowLayout {
 			Layout.fillWidth: true
 			Layout.fillHeight: true
@@ -575,7 +557,15 @@ ApplicationWindow {
 		}
 		RowLayout {
 			Layout.fillWidth: true
-			Item { Layout.fillWidth: true }
+			Label { text: "输出目录" }
+			TextField {
+				id: outputPath
+				Layout.fillWidth: true
+				Layout.minimumWidth: 180
+				selectByMouse: true
+				onTextEdited: window.automaticOutput = false
+			}
+			AppButton { text: "选择目录"; onClicked: folderDialog.open() }
 			AppButton { text: "取消计算"; visible: controller.busy; onClicked: { window.pendingPreview = false; previewTimer.stop(); controller.cancel() } }
 			AppButton { text: window.showingOriginal ? "查看处理结果" : "查看原图"; enabled: window.sourceFile.toString().length > 0; onClicked: window.showingOriginal = !window.showingOriginal }
 			AppButton {
