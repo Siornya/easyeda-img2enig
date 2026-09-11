@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import re
 import secrets
 import sys
 import time
@@ -82,6 +84,16 @@ class PreparedImage:
     pixel_width_mm: float
     pixel_height_mm: float
     rectangles: list[PixelRectangle]
+
+
+@dataclass(frozen=True)
+class ColorSilkImage:
+    width_mm: float
+    height_mm: float
+    width_px: int
+    height_px: int
+    file_name: str
+    data_url: str
 
 
 @dataclass(frozen=True)
@@ -196,6 +208,42 @@ def read_binary_image(
     )
 
 
+def read_color_silk_image(
+    path: str | Path,
+    width_mm: float,
+    height_mm: float | None,
+) -> ColorSilkImage:
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(f"Image does not exist: {source}")
+    if width_mm <= 0:
+        raise ValueError("width_mm must be greater than zero")
+    if height_mm is not None and height_mm <= 0:
+        raise ValueError("height_mm must be greater than zero")
+
+    encoded = np.fromfile(source, dtype=np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise ValueError(f"Unsupported or damaged image: {source}")
+    height_px, width_px = image.shape[:2]
+    physical_height = height_mm or width_mm * height_px / width_px
+    success, png = cv2.imencode(".png", image)
+    if not success:
+        raise ValueError(f"Cannot encode color silkscreen image: {source}")
+    data_url = (
+        "data:image/png;base64,"
+        + base64.b64encode(png.tobytes()).decode("ascii")
+    )
+    return ColorSilkImage(
+        width_mm=width_mm,
+        height_mm=physical_height,
+        width_px=width_px,
+        height_px=height_px,
+        file_name=f"{source.stem}.png",
+        data_url=data_url,
+    )
+
+
 def active_rectangles(active: np.ndarray) -> list[PixelRectangle]:
     """Losslessly merge equal horizontal black-pixel runs across rows."""
 
@@ -247,7 +295,18 @@ def layer_payload(
     }
 
 
-def write_pcb_defaults(writer: LogWriter, width_units: float, height_units: float) -> None:
+def normalize_color(value: str) -> str:
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        raise ValueError("solder_mask_color must use #RRGGBB format")
+    return value.upper()
+
+
+def write_pcb_defaults(
+    writer: LogWriter,
+    width_units: float,
+    height_units: float,
+    solder_mask_color: str,
+) -> None:
     writer.record(
         "CANVAS",
         {
@@ -268,6 +327,9 @@ def write_pcb_defaults(writer: LogWriter, width_units: float, height_units: floa
         "CANVAS",
     )
     for layer_id, layer_type, name, active, inactive, use in LAYERS:
+        if layer_id in (LAYER_IDS["top-mask"], LAYER_IDS["bottom-mask"]):
+            active = solder_mask_color
+            inactive = solder_mask_color
         writer.record(
             "LAYER",
             layer_payload(layer_type, name, active, inactive, use),
@@ -322,7 +384,7 @@ def write_pcb_defaults(writer: LogWriter, width_units: float, height_units: floa
     for silk_layer in (3, 4):
         writer.record(
             "SILK_OPTS",
-            {"defaultColor": "#000000", "baseColor": "#FFFFFF"},
+            {"defaultColor": "#FFFFFF", "baseColor": solder_mask_color},
             compound_id("SILK_OPTS", silk_layer),
         )
     writer.record(
@@ -397,15 +459,27 @@ def build_project(
     include_outline: bool,
     source_type: str = "enig",
     silk_image: PreparedImage | None = None,
+    color_silk_image: ColorSilkImage | None = None,
+    solder_mask_color: str = "#264F3A",
 ) -> ProjectArtifact:
     if side not in ("top", "bottom"):
         raise ValueError("side must be top or bottom")
     if margin_mm < 0:
         raise ValueError("margin_mm must not be negative")
-    if source_type not in ("enig", "silk"):
-        raise ValueError("source_type must be enig or silk")
-    if source_type == "silk" and silk_image is not None:
-        raise ValueError("silk_image cannot be combined with a silk primary image")
+    if source_type not in ("enig", "silk", "color-silk"):
+        raise ValueError("source_type must be enig, silk, or color-silk")
+    if source_type == "silk" and (
+        silk_image is not None or color_silk_image is not None
+    ):
+        raise ValueError(
+            "A monochrome silkscreen primary image cannot be combined "
+            "with another silkscreen image"
+        )
+    if source_type == "color-silk" and (
+        silk_image is not None or color_silk_image is None
+    ):
+        raise ValueError("A color-silk primary image requires exactly one color image")
+    solder_mask_color = normalize_color(solder_mask_color)
 
     project_uuid = secrets.token_hex(8)
     board_uuid = secrets.token_hex(8)
@@ -424,7 +498,7 @@ def build_project(
     writer.record("META_MODIFY", {"updateTime": now_ms}, "META_MODIFY")
 
     writer.document("PCB", pcb_uuid, now_ms)
-    write_pcb_defaults(writer, board_width_units, board_height_units)
+    write_pcb_defaults(writer, board_width_units, board_height_units, solder_mask_color)
     if side == "top":
         enig_layers = (LAYER_IDS["top-copper"], LAYER_IDS["top-mask"])
         silk_layer = LAYER_IDS["top-silk"]
@@ -472,6 +546,33 @@ def build_project(
         write_rectangles(enig_image, enig_layers)
     if effective_silk_image:
         write_rectangles(effective_silk_image, (silk_layer,))
+    if color_silk_image:
+        writer.record(
+            "ELE_PLACEHOLDER",
+            {"dataType": "OBJ", "max": 1},
+            "placeholder-color-silk",
+        )
+        primitive_count += 1
+        writer.record(
+            "OBJ",
+            {
+                "partitionId": None,
+                "groupId": 0,
+                "locked": False,
+                "zIndex": primitive_count,
+                "layerId": silk_layer,
+                "fileName": color_silk_image.file_name,
+                "startX": margin_units,
+                "startY": margin_units,
+                "width": color_silk_image.width_mm * UNITS_PER_MM,
+                "height": color_silk_image.height_mm * UNITS_PER_MM,
+                "angle": 0,
+                "mirror": False,
+                "path": color_silk_image.data_url,
+            },
+            f"e{primitive_count}",
+        )
+
     if include_outline:
         writer.record(
             "ELE_PLACEHOLDER",
@@ -543,7 +644,7 @@ def build_project(
             "cbb_project": False,
             "editorVersion": EDITOR_VERSION,
             "introduction": "Generated by img2enig",
-            "description": "Binary artwork converted to ENIG and silkscreen geometry.",
+            "description": "Artwork converted to ENIG and full-color silkscreen geometry.",
             "tags": "[]",
         },
         epru_name=f"{project_uuid}.epru",
@@ -587,12 +688,15 @@ def validate_epro2(path: str | Path) -> dict[str, Any]:
 
     document_types: list[str] = []
     fill_layers: set[int] = set()
+    object_layers: set[int] = set()
     for line in lines:
         outer, inner = parse_log_line(line)
         if outer.get("type") == "DOCHEAD":
             document_types.append(str(inner.get("docType", "")))
         elif outer.get("type") == "FILL":
             fill_layers.add(int(inner["layerId"]))
+        elif outer.get("type") == "OBJ":
+            object_layers.add(int(inner["layerId"]))
     missing = {"BOARD", "PCB", "CONFIG"}.difference(document_types)
     if missing:
         raise ValueError(f"Missing required documents: {sorted(missing)}")
@@ -602,6 +706,8 @@ def validate_epro2(path: str | Path) -> dict[str, Any]:
         "documents": document_types,
         "records": len(lines),
         "fillLayers": sorted(fill_layers),
+        "objectLayers": sorted(object_layers),
+        "artworkLayers": sorted(fill_layers | object_layers),
         "epru": epru_names[0],
     }
 
@@ -617,9 +723,22 @@ def convert(
     project_name: str | None,
     source_type: str = "enig",
     silk_source: str | Path | None = None,
+    color_silk_source: str | Path | None = None,
+    solder_mask_color: str = "#264F3A",
 ) -> dict[str, Any]:
     source_path = Path(source)
-    image = read_binary_image(source_path, width_mm, height_mm)
+    color_silk_image = None
+    if source_type == "color-silk":
+        color_silk_image = read_color_silk_image(source_path, width_mm, height_mm)
+        image = PreparedImage(
+            width_mm=color_silk_image.width_mm,
+            height_mm=color_silk_image.height_mm,
+            pixel_width_mm=color_silk_image.width_mm / color_silk_image.width_px,
+            pixel_height_mm=color_silk_image.height_mm / color_silk_image.height_px,
+            rectangles=[],
+        )
+    else:
+        image = read_binary_image(source_path, width_mm, height_mm)
     silk_image = None
     if silk_source is not None:
         silk_image = read_binary_image(
@@ -633,6 +752,24 @@ def convert(
                 "Silkscreen mask must have the same pixel dimensions "
                 "as the primary mask"
             )
+    if color_silk_source is not None:
+        if source_type == "color-silk":
+            raise ValueError(
+                "color_silk_source cannot be combined with a color-silk primary image"
+            )
+        color_silk_image = read_color_silk_image(
+            Path(color_silk_source), image.width_mm, image.height_mm
+        )
+        expected_width_px = round(image.width_mm / image.pixel_width_mm)
+        expected_height_px = round(image.height_mm / image.pixel_height_mm)
+        if (color_silk_image.width_px, color_silk_image.height_px) != (
+            expected_width_px,
+            expected_height_px,
+        ):
+            raise ValueError(
+                "Color silkscreen image must have the same pixel dimensions "
+                "as the primary mask"
+            )
     artifact = build_project(
         image,
         project_name or source_path.stem,
@@ -641,16 +778,18 @@ def convert(
         include_outline,
         source_type,
         silk_image,
+        color_silk_image,
+        solder_mask_color,
     )
     output_path = write_epro2(output or source_path.with_suffix(".epro2"), artifact)
     validation = validate_epro2(output_path)
-    if source_type == "silk":
+    if source_type in ("silk", "color-silk"):
         expected_layers = {3} if side == "top" else {4}
     else:
         expected_layers = {1, 5} if side == "top" else {2, 6}
-        if silk_image:
+        if silk_image or color_silk_image:
             expected_layers.add(3 if side == "top" else 4)
-    if set(validation["fillLayers"]) != expected_layers:
+    if set(validation["artworkLayers"]) != expected_layers:
         raise ValueError("Generated project does not contain the expected artwork layers")
     return {
         "output": str(output_path),
@@ -676,10 +815,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--side", choices=("top", "bottom"), default="top")
     parser.add_argument(
         "--source-type",
-        choices=("enig", "silk"),
+        choices=("enig", "silk", "color-silk"),
         default="enig",
     )
     parser.add_argument("--silk", type=Path, help="optional aligned black/white silkscreen mask")
+    parser.add_argument(
+        "--color-silk",
+        type=Path,
+        help="optional aligned full-color silkscreen image",
+    )
+    parser.add_argument(
+        "--solder-mask-color",
+        default="#264F3A",
+        help="PCB solder-mask color as #RRGGBB",
+    )
     parser.add_argument("--margin-mm", type=float, default=1.0)
     parser.add_argument("--no-outline", action="store_true")
     parser.add_argument("--project-name")
@@ -704,6 +853,8 @@ def main(argv: list[str] | None = None) -> int:
                 project_name=args.project_name,
                 source_type=args.source_type,
                 silk_source=args.silk,
+                color_silk_source=args.color_silk,
+                solder_mask_color=args.solder_mask_color,
             )
         print(json.dumps(result, ensure_ascii=False, indent=4))
         return 0

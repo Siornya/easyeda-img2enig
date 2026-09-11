@@ -80,12 +80,12 @@ int main(int argc, char** argv) {
 				const auto value = qGray(output.pixel(x, y));
 				check(value == 0 || value == 255, "Non-binary saved pixel");
 			}
-		QImage signature(400, 200, QImage::Format_Grayscale8);
+		QImage signature(400, 200, QImage::Format_ARGB32);
 		signature.setDotsPerMeterX(11811);
 		signature.setDotsPerMeterY(11811);
-		signature.fill(255);
+		signature.fill(Qt::transparent);
 		for (int y = 60; y < 140; ++y)
-			for (int x = 40; x < 360; ++x) signature.scanLine(y)[x] = 0;
+			for (int x = 40; x < 360; ++x) signature.setPixelColor(x, y, QColor(231, 48, 62));
 		const auto signaturePath = directory.filePath(QStringLiteral("签名.png"));
 		check(signature.save(signaturePath), "Cannot create layer fixture");
 		controller.preview(QUrl::fromLocalFile(signaturePath), {}, 1);
@@ -107,6 +107,14 @@ int main(int argc, char** argv) {
 		controller.setLayerType(0, QStringLiteral("silk"));
 		check(controller.layerRows()[0].toMap().value("type").toString() == QStringLiteral("silk"), "Layer type did not change");
 		check(!controller.compositeUrl().isEmpty(), "Layer composite preview is missing");
+		QImage composite = images.requestImage("composite", nullptr, {});
+		check(composite.pixelColor(450, 370) == QColor(231, 48, 62), "Silkscreen preview did not preserve source color");
+		controller.setLayerVisible(1, false);
+		controller.setSolderMaskColor(QStringLiteral("blue"));
+		check(controller.solderMaskColor() == QStringLiteral("blue"), "Solder-mask selection did not change");
+		composite = images.requestImage("composite", nullptr, {});
+		check(composite.pixelColor(0, 0) == QColor(QStringLiteral("#164d73")), "Solder-mask preview color did not change");
+		controller.setLayerVisible(1, true);
 		controller.selectLayer(1);
 		check(controller.selectedSourceUrl() == url.toString(), "Layer selection did not restore its source");
 		controller.generatePcb(url, directory.path());

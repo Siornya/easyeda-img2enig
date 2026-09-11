@@ -3,6 +3,7 @@
 #include <QFutureWatcher>
 #include <QImageReader>
 #include <QMutexLocker>
+#include <QPainter>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -48,6 +49,18 @@ struct Applied {
 	QString error;
 };
 
+static QColor solderMaskPreviewColor(const QString& color) {
+	if (color == QStringLiteral("red")) return QColor(QStringLiteral("#78242b"));
+	if (color == QStringLiteral("yellow")) return QColor(QStringLiteral("#b58b22"));
+	if (color == QStringLiteral("blue")) return QColor(QStringLiteral("#164d73"));
+	if (color == QStringLiteral("white")) return QColor(QStringLiteral("#ecebe6"));
+	if (color == QStringLiteral("black")) return QColor(QStringLiteral("#191b1d"));
+	return QColor(QStringLiteral("#264f3a"));
+}
+
+static QString solderMaskExportColor(const QString& color) {
+	return solderMaskPreviewColor(color).name(QColor::HexRgb).toUpper();
+}
 Controller::Controller(ImageStore* images, QObject* parent) : QObject(parent), images(images) {}
 Controller::~Controller() {
 	if (cancelled) cancelled->store(true);
@@ -92,7 +105,8 @@ QVariantMap Controller::selectedParameters() const {
 }
 bool Controller::hasExportableLayers() const {
 	return std::any_of(artworkLayers.cbegin(), artworkLayers.cend(), [](const ArtworkLayer& layer) {
-		return layer.visible && !layer.outputImage.isNull();
+		return layer.visible && (layer.type == QStringLiteral("silk")
+			? !layer.originalImage.isNull() : !layer.outputImage.isNull());
 	});
 }
 int Controller::canvasWidth() const { return canvasSize().width(); }
@@ -382,6 +396,17 @@ void Controller::setLayerCenter(int index, double x, double y) {
 	setLayerTopLeft(index, x - size.width() / 2.0, y - size.height() / 2.0);
 }
 
+void Controller::setSolderMaskColor(const QString& color) {
+	static const QStringList colors{
+		QStringLiteral("green"), QStringLiteral("red"), QStringLiteral("yellow"),
+		QStringLiteral("blue"), QStringLiteral("white"), QStringLiteral("black")
+	};
+	if (!colors.contains(color) || maskColor == color) return;
+	maskColor = color;
+	refreshLayerPresentation();
+	emit changed();
+}
+
 void Controller::loadSelectedLayer() {
 	if (selectedLayer < 0 || selectedLayer >= int(artworkLayers.size())) {
 		sourceImage.release();
@@ -443,6 +468,22 @@ QImage Controller::materialMask(const QString& type, bool* hasArtwork) const {
 	return mask;
 }
 
+QImage Controller::colorSilkImage(bool* hasArtwork) const {
+	const QSize canvas = canvasSize();
+	if (hasArtwork) *hasArtwork = false;
+	if (canvas.isEmpty()) return {};
+	QImage image(canvas, QImage::Format_ARGB32_Premultiplied);
+	image.fill(Qt::transparent);
+	QPainter painter(&image);
+	for (auto iterator = artworkLayers.crbegin(); iterator != artworkLayers.crend(); ++iterator) {
+		const auto& layer = *iterator;
+		if (!layer.visible || layer.type != QStringLiteral("silk") || layer.originalImage.isNull()) continue;
+		painter.drawImage(QPointF(layer.x, layer.y), layer.originalImage);
+		if (hasArtwork) *hasArtwork = true;
+	}
+	return image;
+}
+
 void Controller::refreshLayerPresentation() {
 	++revision;
 	layerItems.clear();
@@ -452,9 +493,11 @@ void Controller::refreshLayerPresentation() {
 	for (int index = 0; index < int(artworkLayers.size()); ++index) {
 		const auto& layer = artworkLayers[index];
 		QString thumbnail;
-		if (!layer.outputImage.isNull()) {
+		const QImage thumbnailImage = layer.type == QStringLiteral("silk")
+			? layer.originalImage : layer.outputImage;
+		if (!thumbnailImage.isNull()) {
 			const QString key = QStringLiteral("layer/%1").arg(layer.id);
-			images->put(key, layer.outputImage);
+			images->put(key, thumbnailImage);
 			thumbnail = QStringLiteral("image://results/%1?revision=%2").arg(key).arg(revision);
 		}
 		layerItems.append(QVariantMap{
@@ -485,17 +528,28 @@ void Controller::refreshLayerPresentation() {
 	const int previewWidth = std::max(1, int(canvasWidth * scale));
 	const int previewHeight = std::max(1, int(canvasHeight * scale));
 	QImage preview(previewWidth, previewHeight, QImage::Format_RGB32);
-	preview.fill(QColor("#264536"));
+	preview.fill(solderMaskPreviewColor(maskColor));
 	for (auto iterator = artworkLayers.crbegin(); iterator != artworkLayers.crend(); ++iterator) {
 		const auto& layer = *iterator;
-		if (!layer.visible || layer.outputImage.isNull()) continue;
+		if (!layer.visible) continue;
+		if (layer.type == QStringLiteral("silk")) {
+			if (layer.originalImage.isNull()) continue;
+			QImage source = layer.originalImage;
+			if (scale < 1.0)
+				source = source.scaled(std::max(1, int(source.width() * scale)),
+					std::max(1, int(source.height() * scale)), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+			QPainter painter(&preview);
+			painter.drawImage(QPointF(layer.x * scale, layer.y * scale), source);
+			continue;
+		}
+		if (layer.outputImage.isNull()) continue;
 		QImage source = layer.outputImage.convertToFormat(QImage::Format_Grayscale8);
 		if (scale < 1.0)
 			source = source.scaled(std::max(1, int(source.width() * scale)),
 				std::max(1, int(source.height() * scale)), Qt::IgnoreAspectRatio, Qt::FastTransformation);
 		const int offsetX = qRound(layer.x * scale);
 		const int offsetY = qRound(layer.y * scale);
-		const QRgb color = layer.type == QStringLiteral("enig") ? qRgb(222, 181, 72) : qRgb(245, 245, 240);
+		const QRgb color = qRgb(222, 181, 72);
 		for (int y = 0; y < source.height() && y + offsetY < preview.height(); ++y) {
 			const uchar* sourceLine = source.constScanLine(y);
 			QRgb* destinationLine = reinterpret_cast<QRgb*>(preview.scanLine(y + offsetY));
@@ -585,10 +639,10 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 	bool hasEnig = false;
 	bool hasSilk = false;
 	const QImage enigMask = materialMask(QStringLiteral("enig"), &hasEnig);
-	const QImage silkMask = materialMask(QStringLiteral("silk"), &hasSilk);
+	const QImage silkImage = colorSilkImage(&hasSilk);
 	const QString enigPath = QDir(pcbTemporaryDirectory->path()).filePath(QStringLiteral("enig.png"));
-	const QString silkPath = QDir(pcbTemporaryDirectory->path()).filePath(QStringLiteral("silk.png"));
-	if ((hasEnig && !enigMask.save(enigPath, "PNG")) || (hasSilk && !silkMask.save(silkPath, "PNG"))) {
+	const QString silkPath = QDir(pcbTemporaryDirectory->path()).filePath(QStringLiteral("silk-color.png"));
+	if ((hasEnig && !enigMask.save(enigPath, "PNG")) || (hasSilk && !silkImage.save(silkPath, "PNG"))) {
 		message = QStringLiteral("无法写入 PCB 导出临时图层");
 		pcbTemporaryDirectory.reset();
 		emit changed();
@@ -598,21 +652,23 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 	pcbCancelled = false;
 	const QString primaryPath = hasEnig ? enigPath : silkPath;
 	QStringList arguments{script, primaryPath, QStringLiteral("-o"), pcbDestination,
-		QStringLiteral("--project-name"), sourceFile.completeBaseName()};
-	if (!hasEnig) arguments.append({QStringLiteral("--source-type"), QStringLiteral("silk")});
-	if (hasEnig && hasSilk) arguments.append({QStringLiteral("--silk"), silkPath});
+		QStringLiteral("--project-name"), sourceFile.completeBaseName(),
+		QStringLiteral("--solder-mask-color"), solderMaskExportColor(maskColor)};
+	if (!hasEnig) arguments.append({QStringLiteral("--source-type"), QStringLiteral("color-silk")});
+	if (hasEnig && hasSilk) arguments.append({QStringLiteral("--color-silk"), silkPath});
 	const ArtworkLayer* resolutionLayer = nullptr;
 	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size())
 		&& artworkLayers[selectedLayer].visible && artworkLayers[selectedLayer].hasPhysicalResolution)
 		resolutionLayer = &artworkLayers[selectedLayer];
 	if (!resolutionLayer) {
 		for (const auto& layer : artworkLayers)
-			if (layer.visible && !layer.outputImage.isNull() && layer.hasPhysicalResolution) {
+			if (layer.visible && (layer.type == QStringLiteral("silk")
+				? !layer.originalImage.isNull() : !layer.outputImage.isNull()) && layer.hasPhysicalResolution) {
 				resolutionLayer = &layer;
 				break;
 			}
 	}
-	const QImage& boardMask = hasEnig ? enigMask : silkMask;
+	const QImage& boardMask = hasEnig ? enigMask : silkImage;
 	if (resolutionLayer) {
 		const double widthMm = boardMask.width() * 1000.0 / resolutionLayer->dotsPerMeterX;
 		const double heightMm = boardMask.height() * 1000.0 / resolutionLayer->dotsPerMeterY;

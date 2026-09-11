@@ -40,6 +40,7 @@ class Controller : public QObject {
 	Q_PROPERTY(bool hasExportableLayers READ hasExportableLayers NOTIFY changed)
 	Q_PROPERTY(int canvasWidth READ canvasWidth NOTIFY changed)
 	Q_PROPERTY(int canvasHeight READ canvasHeight NOTIFY changed)
+	Q_PROPERTY(QString solderMaskColor READ solderMaskColor NOTIFY changed)
 public:
 	explicit Controller(ImageStore* images, QObject* parent = nullptr);
 	~Controller() override;
@@ -56,6 +57,7 @@ public:
 	bool hasExportableLayers() const;
 	int canvasWidth() const;
 	int canvasHeight() const;
+	QString solderMaskColor() const { return maskColor; }
 	Q_INVOKABLE void compare(const QUrl& source, const QVariantMap& parameters);
 	Q_INVOKABLE void preview(const QUrl& source, const QVariantMap& parameters, int method);
 	Q_INVOKABLE QString localPath(const QUrl& url) const;
@@ -69,6 +71,7 @@ public:
 	Q_INVOKABLE void moveLayer(int index, int offset);
 	Q_INVOKABLE void setLayerTopLeft(int index, double x, double y);
 	Q_INVOKABLE void setLayerCenter(int index, double x, double y);
+	Q_INVOKABLE void setSolderMaskColor(const QString& color);
 	Q_INVOKABLE void apply(int index);
 	Q_INVOKABLE void cancel();
 	Q_INVOKABLE void invalidate();
@@ -98,6 +101,7 @@ private:
 	void loadSelectedLayer();
 	void refreshLayerPresentation();
 	QImage materialMask(const QString& type, bool* hasArtwork = nullptr) const;
+	QImage colorSilkImage(bool* hasArtwork = nullptr) const;
 	QSize layerSize(const ArtworkLayer& layer) const;
 	QSize canvasSize() const;
 	ImageStore* images;
@@ -111,6 +115,7 @@ private:
 	int nextLayerId = 1;
 	int minimumCanvasWidth = 0;
 	int minimumCanvasHeight = 0;
+	QString maskColor = QStringLiteral("green");
 	cv::Mat sourceImage;
 	QImage output;
 	binarizer::Options settings;

@@ -545,7 +545,7 @@ ApplicationWindow {
 					}
 					Rectangle {
 						Layout.fillWidth: true
-						Layout.preferredHeight: 82
+						Layout.preferredHeight: 122
 						radius: 8
 						color: "#ffffff"
 						border.width: 1
@@ -558,6 +558,16 @@ ApplicationWindow {
 							Label { text: controller.canvasWidth + " px"; font.bold: true; Layout.alignment: Qt.AlignRight }
 							Label { text: "总体 Y 大小" }
 							Label { text: controller.canvasHeight + " px"; font.bold: true; Layout.alignment: Qt.AlignRight }
+							Label { text: "阻焊颜色" }
+							ComboBox {
+								Layout.fillWidth: true
+								model: ["绿", "红", "黄", "蓝", "白", "哑黑"]
+								currentIndex: ["green", "red", "yellow", "blue", "white", "black"]
+									.indexOf(controller.solderMaskColor)
+								enabled: !controller.busy
+								onActivated: controller.setSolderMaskColor(
+									["green", "red", "yellow", "blue", "white", "black"][currentIndex])
+							}
 						}
 					}
 				}

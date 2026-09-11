@@ -1,6 +1,6 @@
 # easyeda-arknights-enig
 
-将普通图片处理为纯黑白图，再转换成可导入嘉立创EDA专业版的沉金和丝印 PCB 图案工程。
+将普通图片处理为沉金图案或保留原色的彩色丝印，再转换成可导入嘉立创EDA专业版的 PCB 图案工程。
 
 项目包含两个相互独立的步骤：
 
@@ -121,14 +121,14 @@ binarize_file("input.png", "output.png", options)
 
 ## 生成沉金 PCB 工程
 
-`img2enig.py` 只接受像素值为 `0` 或 `255` 的纯黑白图片。默认情况下黑色区域代表需要露金的完整面积；使用 `--source-type silk` 时黑色区域代表丝印。
+`img2enig.py` 的沉金和传统丝印输入只接受像素值为 `0` 或 `255` 的纯黑白图片。默认情况下黑色区域代表需要露金的完整面积；使用 `--source-type silk` 时黑色区域代表传统单色丝印。使用 `--source-type color-silk` 或 `--color-silk` 时，丝印图片会按原始 RGBA 颜色嵌入工程。
 
 转换过程：
 
 1. 将图片向下的 Y 轴转换为 PCB 向上的 Y 轴，同时保持左右方向不变；
 2. 将连续黑色像素无损合并为填充矩形；
 3. 将沉金掩膜写入顶层或底层铜层，并在对应阻焊层生成完全重合的开窗；
-4. 将可选丝印掩膜写入顶层或底层丝印层；
+4. 将可选黑白丝印掩膜或原色 PNG 写入顶层或底层丝印层；
 5. 生成矩形板框并封装为 `.epro2`。
 
 基本用法：
@@ -177,6 +177,15 @@ binarize_file("input.png", "output.png", options)
 ```bash
 .venv/bin/python img2enig.py silk.binary.png --source-type silk
 .venv/bin/python img2enig.py enig.binary.png --silk silk.binary.png
+```
+
+彩色丝印会保留原图颜色和透明区域。也可以用 `--solder-mask-color` 设置工程中的阻焊颜色：
+
+```bash
+.venv/bin/python img2enig.py silk.png --source-type color-silk \
+    --solder-mask-color '#164D73'
+.venv/bin/python img2enig.py enig.binary.png --color-silk silk.png \
+    --solder-mask-color '#191B1D'
 ```
 
 - 顶面丝印使用 Layer `3`；
