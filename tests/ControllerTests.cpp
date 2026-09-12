@@ -63,8 +63,18 @@ int main(int argc, char** argv) {
 		wait(controller);
 		check(controller.candidates().size() == int(binarizer::methods.size()), "Missing candidates");
 		for (const auto& candidate : controller.candidates()) {
-			check(candidate.toMap().value("error").toString().isEmpty(), "Candidate failed");
-			const auto key = candidate.toMap().value("image").toString().mid(QString("image://results/").size());
+			const auto values = candidate.toMap();
+			check(values.value("error").toString().isEmpty(), "Candidate failed");
+			if (values.value("name").toString() == QStringLiteral("Otsu")
+				|| values.value("name").toString() == QStringLiteral("Triangle")
+				|| values.value("name").toString() == QStringLiteral("Li")) {
+				const QString label = values.value("parameters").toString();
+				bool numberOk = false;
+				label.section(' ', -1).toInt(&numberOk);
+				check(label.startsWith(QStringLiteral("自动阈值 ")) && numberOk,
+					"Calculated automatic threshold is missing");
+			}
+			const auto key = values.value("image").toString().mid(QString("image://results/").size());
 			QSize size;
 			check(!images.requestImage(key, &size, {}).isNull(), "Missing image");
 			check(size.width() == 640, "Preview was not bounded");
@@ -139,6 +149,29 @@ int main(int argc, char** argv) {
 		}
 		check(controller.selectedSourceUrl() == url.toString(), "Layer selection did not restore its source");
 		check(controller.status().contains(path), "Layer selection did not report its source path");
+		controller.moveLayer(1, -1);
+		check(controller.selectedLayerIndex() == 0, "Moving a layer lost selection");
+		controller.setLayerVisible(1, false);
+		check(!controller.layerRows()[1].toMap().value("visible").toBool(), "Layer visibility did not change");
+		controller.removeLayer(1);
+		check(controller.layerRows().size() == 1, "Layer deletion failed");
+		controller.setActiveSide(QStringLiteral("back"));
+		check(controller.activeSide() == QStringLiteral("back"), "Back side did not become active");
+		check(controller.layerRows().isEmpty() && controller.selectedLayerIndex() == -1,
+			"Front layers leaked into the back-side editor");
+		controller.preview(QUrl::fromLocalFile(signaturePath), {}, 4);
+		wait(controller);
+		check(controller.layerRows().size() == 1, "Back-side layer was not created");
+		const int backLayerIndex = controller.layerRows()[0].toMap().value("layerIndex").toInt();
+		check(controller.layerRows()[0].toMap().value("side") == QStringLiteral("back"),
+			"New layer was assigned to the wrong side");
+		controller.setLayerType(backLayerIndex, QStringLiteral("silk"));
+		controller.setActiveSide(QStringLiteral("front"));
+		check(controller.layerRows().size() == 1, "Back layer leaked into the front-side editor");
+		check(controller.selectedSourceUrl() == url.toString(), "Front-side selection was not restored");
+		controller.setActiveSide(QStringLiteral("back"));
+		check(controller.selectedSourceUrl() == QUrl::fromLocalFile(signaturePath).toString(),
+			"Back-side selection was not restored");
 		controller.generatePcb(url, directory.path());
 		wait(controller);
 		const auto pcbPath = directory.filePath(QStringLiteral("输入.epro2"));
@@ -147,12 +180,6 @@ int main(int argc, char** argv) {
 		check(controller.status().contains(QStringLiteral("已生成 PCB 文件")), "PCB export status failed");
 		check(controller.status().contains(QStringLiteral("按图片 DPI")), "PCB export ignored image DPI");
 		check(controller.status().contains(QStringLiteral("图案 101.60 × 67.73 mm")), "PCB export calculated the wrong physical size");
-		controller.moveLayer(1, -1);
-		check(controller.selectedLayerIndex() == 0, "Moving a layer lost selection");
-		controller.setLayerVisible(1, false);
-		check(!controller.layerRows()[1].toMap().value("visible").toBool(), "Layer visibility did not change");
-		controller.removeLayer(1);
-		check(controller.layerRows().size() == 1, "Layer deletion failed");
 		controller.invalidate();
 		check(controller.candidates().isEmpty() && controller.resultUrl().isEmpty(), "Stale results remain");
 		controller.compare(url, {});
@@ -162,7 +189,7 @@ int main(int argc, char** argv) {
 		controller.compare(QUrl::fromLocalFile(directory.filePath("missing.png")), {});
 		wait(controller);
 		check(controller.candidates().isEmpty(), "Failed input published results");
-		std::cout << "PASS: comparison, image store, full-size selection/export, invalidation, cancel and load failure\n";
+		std::cout << "PASS: comparison, image store, side-separated layers, export, invalidation, cancel and load failure\n";
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';
 		controller.cancel();

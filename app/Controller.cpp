@@ -18,6 +18,7 @@
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 QImage ImageStore::requestImage(const QString& id, QSize* size, const QSize& requested) {
@@ -46,6 +47,7 @@ struct Comparison {
 	bool hasPhysicalResolution = false;
 	std::vector<QImage> previews;
 	std::vector<QString> errors;
+	std::vector<double> thresholds;
 	QString error;
 };
 struct Applied {
@@ -189,6 +191,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				layer.id = nextLayerId++;
 				layer.name = QFileInfo(sourcePath).completeBaseName();
 				layer.sourcePath = sourcePath;
+				layer.side = activeSideValue;
 				artworkLayers.insert(artworkLayers.begin(), std::move(layer));
 				targetIndex = 0;
 			} else {
@@ -218,6 +221,7 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				}
 			}
 			selectedLayer = targetIndex;
+			selectedLayerIdForSide(activeSideValue) = artworkLayers[targetIndex].id;
 			++revision;
 			const QString key = QString::number(revision) + "/original";
 			images->put(key, batch.original);
@@ -240,8 +244,11 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				images->put(id, batch.previews[i]);
 				QString parameters;
 				if (method == binarizer::Method::Otsu || method == binarizer::Method::Triangle
-					|| method == binarizer::Method::Li) parameters = QStringLiteral("自动阈值");
-				else if (method == binarizer::Method::Fixed) parameters = QStringLiteral("阈值 %1").arg(settings.threshold);
+					|| method == binarizer::Method::Li) {
+					parameters = std::isfinite(batch.thresholds[i])
+						? QStringLiteral("自动阈值 %1").arg(qRound(batch.thresholds[i]))
+						: QStringLiteral("自动阈值");
+				} else if (method == binarizer::Method::Fixed) parameters = QStringLiteral("阈值 %1").arg(settings.threshold);
 				else if (method == binarizer::Method::Adaptive) parameters = QStringLiteral("窗口 %1 · C %2").arg(settings.blockSize).arg(settings.adaptiveC);
 				else if (method == binarizer::Method::Bernsen) parameters = QStringLiteral("窗口 %1 · 回退阈值 %2").arg(settings.blockSize).arg(settings.threshold);
 				else parameters = QStringLiteral("窗口 %1 · k %2").arg(settings.blockSize).arg(settings.localK);
@@ -283,13 +290,15 @@ void Controller::run(const QUrl& url, const QVariantMap& p, int singleMethod) {
 				const auto method = binarizer::methods[index];
 				auto candidate = options;
 				candidate.method = method;
+				double thresholdValue = std::numeric_limits<double>::quiet_NaN();
 				try {
-					batch.previews.push_back(display(binarizer::threshold(gray, candidate)));
+					batch.previews.push_back(display(binarizer::threshold(gray, candidate, &thresholdValue)));
 					batch.errors.emplace_back();
 				} catch (const std::exception& error) {
 					batch.previews.emplace_back();
 					batch.errors.push_back(QString::fromUtf8(error.what()));
 				}
+				batch.thresholds.push_back(thresholdValue);
 			}
 		} catch (const std::exception& error) { batch.error = QString::fromUtf8(error.what()); }
 		return batch;
@@ -344,8 +353,10 @@ void Controller::apply(int index) {
 
 void Controller::selectLayer(int index) {
 	if (active || index < 0 || index >= int(artworkLayers.size())) return;
+	if (artworkLayers[index].side != activeSideValue) return;
 	if (index != selectedLayer) {
 		selectedLayer = index;
+		selectedLayerIdForSide(activeSideValue) = artworkLayers[index].id;
 		rows.clear();
 		loadSelectedLayer();
 		refreshLayerPresentation();
@@ -375,10 +386,11 @@ void Controller::setLayerVisible(int index, bool visible) {
 void Controller::removeLayer(int index) {
 	if (active || index < 0 || index >= int(artworkLayers.size())) return;
 	const QString name = artworkLayers[index].name;
+	const QString side = artworkLayers[index].side;
+	const int removedId = artworkLayers[index].id;
 	artworkLayers.erase(artworkLayers.begin() + index);
-	if (artworkLayers.empty()) selectedLayer = -1;
-	else if (selectedLayer > index) --selectedLayer;
-	else if (selectedLayer >= int(artworkLayers.size())) selectedLayer = int(artworkLayers.size()) - 1;
+	if (selectedLayerIdForSide(side) == removedId) selectedLayerIdForSide(side) = -1;
+	selectLayerForActiveSide();
 	rows.clear();
 	loadSelectedLayer();
 	refreshLayerPresentation();
@@ -388,11 +400,14 @@ void Controller::removeLayer(int index) {
 
 void Controller::moveLayer(int index, int offset) {
 	if (active || index < 0 || index >= int(artworkLayers.size())) return;
-	const int destination = index + offset;
+	if (offset != -1 && offset != 1) return;
+	const QString side = artworkLayers[index].side;
+	int destination = index + offset;
+	while (destination >= 0 && destination < int(artworkLayers.size())
+		&& artworkLayers[destination].side != side) destination += offset;
 	if (destination < 0 || destination >= int(artworkLayers.size())) return;
 	std::swap(artworkLayers[index], artworkLayers[destination]);
-	if (selectedLayer == index) selectedLayer = destination;
-	else if (selectedLayer == destination) selectedLayer = index;
+	selectLayerForActiveSide();
 	refreshLayerPresentation();
 	emit changed();
 }
@@ -421,6 +436,47 @@ void Controller::setSolderMaskColor(const QString& color) {
 	if (!colors.contains(color) || maskColor == color) return;
 	maskColor = color;
 	refreshLayerPresentation();
+	emit changed();
+}
+
+int& Controller::selectedLayerIdForSide(const QString& side) {
+	return side == QStringLiteral("back") ? backSelectedLayerId : frontSelectedLayerId;
+}
+
+int Controller::selectedLayerIdForSide(const QString& side) const {
+	return side == QStringLiteral("back") ? backSelectedLayerId : frontSelectedLayerId;
+}
+
+int Controller::layerIndexById(int id) const {
+	if (id < 0) return -1;
+	for (int index = 0; index < int(artworkLayers.size()); ++index)
+		if (artworkLayers[index].id == id) return index;
+	return -1;
+}
+
+void Controller::selectLayerForActiveSide() {
+	selectedLayer = layerIndexById(selectedLayerIdForSide(activeSideValue));
+	if (selectedLayer >= 0 && artworkLayers[selectedLayer].side == activeSideValue) return;
+	selectedLayer = -1;
+	for (int index = 0; index < int(artworkLayers.size()); ++index) {
+		if (artworkLayers[index].side != activeSideValue) continue;
+		selectedLayer = index;
+		selectedLayerIdForSide(activeSideValue) = artworkLayers[index].id;
+		return;
+	}
+	selectedLayerIdForSide(activeSideValue) = -1;
+}
+
+void Controller::setActiveSide(const QString& side) {
+	if (active || (side != QStringLiteral("front") && side != QStringLiteral("back"))
+		|| activeSideValue == side) return;
+	activeSideValue = side;
+	selectLayerForActiveSide();
+	rows.clear();
+	loadSelectedLayer();
+	refreshLayerPresentation();
+	message = side == QStringLiteral("front")
+		? QStringLiteral("已切换到正面") : QStringLiteral("已切换到背面");
 	emit changed();
 }
 
@@ -463,7 +519,11 @@ void Controller::refreshLayerPresentation() {
 	const QSize canvas = canvasSize();
 	const int canvasWidth = canvas.width();
 	const int canvasHeight = canvas.height();
-	for (int index = 0; index < int(artworkLayers.size()); ++index) {
+	std::vector<int> sideLayerIndexes;
+	for (int index = 0; index < int(artworkLayers.size()); ++index)
+		if (artworkLayers[index].side == activeSideValue) sideLayerIndexes.push_back(index);
+	for (int position = 0; position < int(sideLayerIndexes.size()); ++position) {
+		const int index = sideLayerIndexes[position];
 		const auto& layer = artworkLayers[index];
 		QString thumbnail;
 		const QImage thumbnailImage = layer.type == QStringLiteral("silk")
@@ -474,9 +534,10 @@ void Controller::refreshLayerPresentation() {
 			thumbnail = QStringLiteral("image://results/%1?revision=%2").arg(key).arg(revision);
 		}
 		layerItems.append(QVariantMap{
-			{"name", layer.name}, {"type", layer.type},
+			{"layerIndex", index}, {"name", layer.name}, {"type", layer.type},
 			{"typeName", layer.type == QStringLiteral("enig") ? QStringLiteral("沉金") : QStringLiteral("丝印")},
-			{"visible", layer.visible}, {"selected", index == selectedLayer},
+			{"side", layer.side}, {"visible", layer.visible}, {"selected", index == selectedLayer},
+			{"canMoveUp", position > 0}, {"canMoveDown", position + 1 < int(sideLayerIndexes.size())},
 			{"leftX", layer.x}, {"topY", layer.y},
 			{"centerX", layer.x + layerSize(layer).width() / 2.0},
 			{"centerY", layer.y + layerSize(layer).height() / 2.0},
@@ -504,7 +565,7 @@ void Controller::refreshLayerPresentation() {
 	preview.fill(solderMaskPreviewColor(maskColor));
 	for (auto iterator = artworkLayers.crbegin(); iterator != artworkLayers.crend(); ++iterator) {
 		const auto& layer = *iterator;
-		if (!layer.visible) continue;
+		if (!layer.visible || layer.side != activeSideValue) continue;
 		if (layer.type == QStringLiteral("silk")) {
 			if (layer.originalImage.isNull()) continue;
 			QImage source = layer.originalImage;
@@ -629,7 +690,7 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 		}
 		exportedLayers.append(QJsonObject{{QStringLiteral("source"), path},
 			{QStringLiteral("type"), layer.type}, {QStringLiteral("x"), layer.x},
-			{QStringLiteral("y"), layer.y}});
+			{QStringLiteral("y"), layer.y}, {QStringLiteral("side"), layer.side}});
 	}
 	const ArtworkLayer* resolutionLayer = nullptr;
 	if (selectedLayer >= 0 && selectedLayer < int(artworkLayers.size())
@@ -645,17 +706,24 @@ void Controller::generatePcb(const QUrl& source, const QString& directory) {
 	}
 	QJsonObject canvasSettings{{QStringLiteral("width"), canvas.width()},
 		{QStringLiteral("height"), canvas.height()}};
+	double widthMm;
+	double heightMm;
 	if (resolutionLayer) {
-		const double widthMm = canvas.width() * 1000.0 / resolutionLayer->dotsPerMeterX;
-		const double heightMm = canvas.height() * 1000.0 / resolutionLayer->dotsPerMeterY;
-		canvasSettings.insert(QStringLiteral("widthMm"), widthMm);
-		canvasSettings.insert(QStringLiteral("heightMm"), heightMm);
+		widthMm = canvas.width() * 1000.0 / resolutionLayer->dotsPerMeterX;
+		heightMm = canvas.height() * 1000.0 / resolutionLayer->dotsPerMeterY;
 		pcbDimensionMessage = QStringLiteral("按图片 DPI：图案 %1 × %2 mm，板框 %3 × %4 mm")
 			.arg(widthMm, 0, 'f', 2).arg(heightMm, 0, 'f', 2)
 			.arg(widthMm + 2.0, 0, 'f', 2).arg(heightMm + 2.0, 0, 'f', 2);
 	} else {
-		pcbDimensionMessage = QStringLiteral("未检测到可靠 DPI，图案宽度沿用 50 mm，板框四周各加 1 mm");
+		constexpr double defaultDpi = 300.0;
+		widthMm = canvas.width() * 25.4 / defaultDpi;
+		heightMm = canvas.height() * 25.4 / defaultDpi;
+		pcbDimensionMessage = QStringLiteral("未检测到可靠 DPI，按默认 300 DPI：图案 %1 × %2 mm，板框 %3 × %4 mm")
+			.arg(widthMm, 0, 'f', 2).arg(heightMm, 0, 'f', 2)
+			.arg(widthMm + 2.0, 0, 'f', 2).arg(heightMm + 2.0, 0, 'f', 2);
 	}
+	canvasSettings.insert(QStringLiteral("widthMm"), widthMm);
+	canvasSettings.insert(QStringLiteral("heightMm"), heightMm);
 	const QJsonObject manifestObject{
 		{QStringLiteral("canvas"), canvasSettings},
 		{QStringLiteral("projectName"), sourceFile.completeBaseName()},

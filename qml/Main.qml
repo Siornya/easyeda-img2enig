@@ -10,7 +10,7 @@ ApplicationWindow {
 	height: 800
 	minimumWidth: 1080
 	minimumHeight: 740
-	title: "图片二值化"
+	title: "Nasti PCB Designer"
 	font.pixelSize: 15
 	property url sourceFile
 	property bool automaticOutput: true
@@ -19,7 +19,11 @@ ApplicationWindow {
 	property bool selectingLayer: false
 	readonly property bool darkMode: Application.styleHints.colorScheme === Qt.Dark
 	property string displayedResult: ""
-	property var currentLayer: controller.selectedLayer >= 0 ? controller.layers[controller.selectedLayer] : null
+	property var currentLayer: {
+		for (const layer of controller.layers)
+			if (layer.selected) return layer
+		return null
+	}
 	readonly property color pageColor: darkMode ? "#1f2329" : "#f0f1f3"
 	readonly property color surfaceColor: darkMode ? "#292e36" : "#f5f6f8"
 	readonly property color raisedColor: darkMode ? "#323842" : "#ffffff"
@@ -71,6 +75,15 @@ ApplicationWindow {
 		showingOriginal = false
 		selectingLayer = false
 	}
+	function switchSide(side) {
+		selectingLayer = true
+		controller.setActiveSide(side)
+		sourceFile = controller.selectedSourceUrl
+		displayedResult = controller.compositeUrl
+		showingOriginal = false
+		applySelectedParameters()
+		selectingLayer = false
+	}
 	function applySelectedParameters() {
 		const values = controller.selectedParameters
 		if (values.method === undefined) return
@@ -119,7 +132,8 @@ ApplicationWindow {
 		controller.setLayerType(layerIndex, materialIndex === 0 ? "enig" : "silk")
 	}
 	onSourceFileChanged: {
-		if (automaticOutput && controller.layers.length === 0) outputPath.text = controller.sourceDirectory(sourceFile)
+		if (automaticOutput && !controller.hasExportableLayers && sourceFile.toString().length)
+			outputPath.text = controller.sourceDirectory(sourceFile)
 		displayedResult = ""
 		if (!selectingLayer) requestPreview()
 	}
@@ -422,6 +436,74 @@ ApplicationWindow {
 					spacing: 8
 					Rectangle {
 						Layout.fillWidth: true
+						Layout.preferredHeight: 36
+						radius: 8
+						color: window.borderColor
+						Rectangle {
+							anchors.fill: parent
+							anchors.margins: 1
+							radius: 7
+							clip: true
+							color: window.buttonColor
+							RowLayout {
+								anchors.fill: parent
+								spacing: 0
+								Button {
+									id: frontSideButton
+									Layout.fillWidth: true
+									Layout.fillHeight: true
+									padding: 0
+									hoverEnabled: true
+									enabled: !controller.busy
+									Accessible.name: "正面"
+									onClicked: window.switchSide("front")
+									contentItem: Text {
+										text: "正面"
+										font.pixelSize: frontSideButton.font.pixelSize
+										font.bold: controller.activeSide === "front"
+										color: controller.activeSide === "front" ? "white" : window.textColor
+										horizontalAlignment: Text.AlignHCenter
+										verticalAlignment: Text.AlignVCenter
+									}
+									background: Rectangle {
+										color: controller.activeSide === "front" ? "#2f80d8"
+											: frontSideButton.down ? window.buttonDownColor
+											: frontSideButton.hovered ? window.buttonHoverColor : window.buttonColor
+									}
+								}
+								Rectangle {
+									Layout.preferredWidth: 1
+									Layout.fillHeight: true
+									color: window.borderColor
+								}
+								Button {
+									id: backSideButton
+									Layout.fillWidth: true
+									Layout.fillHeight: true
+									padding: 0
+									hoverEnabled: true
+									enabled: !controller.busy
+									Accessible.name: "背面"
+									onClicked: window.switchSide("back")
+									contentItem: Text {
+										text: "背面"
+										font.pixelSize: backSideButton.font.pixelSize
+										font.bold: controller.activeSide === "back"
+										color: controller.activeSide === "back" ? "white" : window.textColor
+										horizontalAlignment: Text.AlignHCenter
+										verticalAlignment: Text.AlignVCenter
+									}
+									background: Rectangle {
+										color: controller.activeSide === "back" ? "#2f80d8"
+											: backSideButton.down ? window.buttonDownColor
+											: backSideButton.hovered ? window.buttonHoverColor : window.buttonColor
+									}
+								}
+							}
+						}
+					}
+					Rectangle {
+						Layout.fillWidth: true
 						Layout.preferredHeight: 112
 						radius: 8
 						color: window.raisedColor
@@ -486,9 +568,7 @@ ApplicationWindow {
 							spacing: 7
 							model: controller.layers
 							delegate: Rectangle {
-								id: layerDelegate
 								required property var modelData
-								required property int index
 								width: layerList.width
 								height: 104
 								radius: 8
@@ -496,48 +576,49 @@ ApplicationWindow {
 								border.width: 1
 								border.color: modelData.selected ? "#2f80d8" : window.borderColor
 								ColumnLayout {
-								anchors.fill: parent
-								anchors.margins: 7
-								spacing: 4
-								RowLayout {
-									Layout.fillWidth: true
-									Image {
-										Layout.preferredWidth: 42
-										Layout.preferredHeight: 42
-										source: modelData.thumbnail
-										fillMode: Image.PreserveAspectFit
-										smooth: false
-										cache: false
-										MouseArea { anchors.fill: parent; onClicked: window.chooseLayer(index) }
-									}
-									ColumnLayout {
+									anchors.fill: parent
+									anchors.margins: 7
+									spacing: 4
+									RowLayout {
 										Layout.fillWidth: true
-										Label {
+										Image {
+											Layout.preferredWidth: 42
+											Layout.preferredHeight: 42
+											source: modelData.thumbnail
+											fillMode: Image.PreserveAspectFit
+											smooth: false
+											cache: false
+											MouseArea { anchors.fill: parent; onClicked: window.chooseLayer(modelData.layerIndex) }
+										}
+										ColumnLayout {
 											Layout.fillWidth: true
-											text: modelData.name
-											font.bold: modelData.selected
-											elide: Text.ElideMiddle
-											MouseArea { anchors.fill: parent; onClicked: window.chooseLayer(index) }
-										}
-										CheckBox {
-											text: "显示"
-											checked: modelData.visible
-											enabled: !controller.busy
-											onToggled: controller.setLayerVisible(index, checked)
+											Label {
+												Layout.fillWidth: true
+												text: modelData.name
+												font.bold: modelData.selected
+												elide: Text.ElideMiddle
+												MouseArea { anchors.fill: parent; onClicked: window.chooseLayer(modelData.layerIndex) }
+											}
+											CheckBox {
+												text: "显示"
+												checked: modelData.visible
+												enabled: !controller.busy
+												onToggled: controller.setLayerVisible(modelData.layerIndex, checked)
+											}
 										}
 									}
-								}
-								RowLayout {
-									Layout.fillWidth: true
-									ComboBox {
+									RowLayout {
 										Layout.fillWidth: true
-										model: ["沉金", "丝印"]
-										currentIndex: modelData.type === "enig" ? 0 : 1
-										enabled: !controller.busy
-										onActivated: window.setLayerMaterial(layerDelegate.index, currentIndex)
+										ComboBox {
+											Layout.fillWidth: true
+											model: ["沉金", "丝印"]
+											currentIndex: modelData.type === "enig" ? 0 : 1
+											enabled: !controller.busy
+											onActivated: window.setLayerMaterial(modelData.layerIndex, currentIndex)
+										}
+										AppButton { text: "↑"; implicitWidth: 30; enabled: !controller.busy && modelData.canMoveUp; onClicked: controller.moveLayer(modelData.layerIndex, -1) }
+										AppButton { text: "↓"; implicitWidth: 30; enabled: !controller.busy && modelData.canMoveDown; onClicked: controller.moveLayer(modelData.layerIndex, 1) }
 									}
-									AppButton { text: "↑"; implicitWidth: 30; enabled: !controller.busy && index > 0; onClicked: controller.moveLayer(index, -1) }
-									AppButton { text: "↓"; implicitWidth: 30; enabled: !controller.busy && index + 1 < controller.layers.length; onClicked: controller.moveLayer(index, 1) }
 								}
 							}
 						}
@@ -548,8 +629,7 @@ ApplicationWindow {
 							color: window.mutedTextColor
 							wrapMode: Text.WordWrap
 							width: parent.width - 20
-								horizontalAlignment: Text.AlignHCenter
-							}
+							horizontalAlignment: Text.AlignHCenter
 						}
 					}
 					Rectangle {

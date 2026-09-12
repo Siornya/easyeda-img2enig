@@ -3,6 +3,7 @@
 #include <opencv2/photo.hpp>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace binarizer {
@@ -149,15 +150,25 @@ static double liThreshold(const cv::Mat& gray) {
 	}
 	return next + minimum;
 }
-cv::Mat threshold(const cv::Mat& gray, const Options& o) {
+cv::Mat threshold(const cv::Mat& gray, const Options& o, double* thresholdValue) {
 	validate(o);
 	if (gray.empty() || gray.type() != CV_8UC1) throw std::invalid_argument("Expected grayscale image");
 	cv::Mat binary;
-	if (o.method == Method::Fixed) cv::threshold(gray, binary, o.threshold, 255, cv::THRESH_BINARY);
-	else if (o.method == Method::Otsu) cv::threshold(gray, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
-	else if (o.method == Method::Triangle) cv::threshold(gray, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_TRIANGLE);
-	else if (o.method == Method::Li) cv::threshold(gray, binary, liThreshold(gray), 255, cv::THRESH_BINARY);
-	else if (o.method == Method::Adaptive)
+	if (thresholdValue) *thresholdValue = std::numeric_limits<double>::quiet_NaN();
+	if (o.method == Method::Fixed) {
+		if (thresholdValue) *thresholdValue = o.threshold;
+		cv::threshold(gray, binary, o.threshold, 255, cv::THRESH_BINARY);
+	} else if (o.method == Method::Otsu) {
+		const double value = cv::threshold(gray, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+		if (thresholdValue) *thresholdValue = value;
+	} else if (o.method == Method::Triangle) {
+		const double value = cv::threshold(gray, binary, 0, 255, cv::THRESH_BINARY | cv::THRESH_TRIANGLE);
+		if (thresholdValue) *thresholdValue = value;
+	} else if (o.method == Method::Li) {
+		const double value = liThreshold(gray);
+		if (thresholdValue) *thresholdValue = value;
+		cv::threshold(gray, binary, value, 255, cv::THRESH_BINARY);
+	} else if (o.method == Method::Adaptive)
 		cv::adaptiveThreshold(gray, binary, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C, cv::THRESH_BINARY, o.blockSize, o.adaptiveC);
 	else {
 		cv::Mat source, mean, squareMean, variance, deviation, thresholdMap;

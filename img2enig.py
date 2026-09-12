@@ -19,10 +19,13 @@ import numpy as np
 
 
 UNITS_PER_MM = 1.0 / 0.254
+DEFAULT_DPI = 300.0
 EDITOR_VERSION = "3.2"
 LAYER_IDS = {
     "top-copper": 1,
+    "bottom-copper": 2,
     "top-silk": 3,
+    "bottom-silk": 4,
     "top-mask": 5,
     "bottom-mask": 6,
     "outline": 11,
@@ -96,6 +99,7 @@ class LayerSpec:
     kind: str
     x: float
     y: float
+    side: str = "front"
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,7 @@ class PositionedLayer:
     kind: str
     x: float
     y: float
+    side: str = "front"
     binary_image: BinaryImage | None = None
     color_image: ColorSilkImage | None = None
 
@@ -483,7 +488,12 @@ def build_project(
                 margin_units + (layer.x + rectangle.x1) * pixel_width_units,
                 margin_units + (bottom + rectangle.y1) * pixel_height_units,
             )
-            for layer_id in (LAYER_IDS["top-copper"], LAYER_IDS["top-mask"]):
+            layer_ids = (
+                (LAYER_IDS["bottom-copper"], LAYER_IDS["bottom-mask"])
+                if layer.side == "back"
+                else (LAYER_IDS["top-copper"], LAYER_IDS["top-mask"])
+            )
+            for layer_id in layer_ids:
                 primitive_count += 1
                 write_fill(
                     writer,
@@ -515,7 +525,9 @@ def build_project(
                     "groupId": 0,
                     "locked": False,
                     "zIndex": primitive_count,
-                    "layerId": LAYER_IDS["top-silk"],
+                    "layerId": LAYER_IDS[
+                        "bottom-silk" if layer.side == "back" else "top-silk"
+                    ],
                     "fileName": artwork.file_name,
                     "startX": margin_units + layer.x * pixel_width_units,
                     "startY": margin_units + bottom * pixel_height_units,
@@ -679,6 +691,8 @@ def prepare_positioned_layers(
     for spec in specs:
         if spec.kind not in ("enig", "silk"):
             raise ValueError("Layer type must be enig or silk")
+        if spec.side not in ("front", "back"):
+            raise ValueError("Layer side must be front or back")
         if not np.isfinite(spec.x) or not np.isfinite(spec.y):
             raise ValueError("Layer coordinates must be finite")
         if spec.x < 0 or spec.y < 0:
@@ -686,11 +700,15 @@ def prepare_positioned_layers(
         if spec.kind == "enig":
             binary = read_binary_image(spec.source)
             width_px, height_px = binary.width_px, binary.height_px
-            layer = PositionedLayer("enig", spec.x, spec.y, binary)
+            layer = PositionedLayer(
+                "enig", spec.x, spec.y, spec.side, binary_image=binary
+            )
         else:
             color = read_color_silk_image(spec.source)
             width_px, height_px = color.width_px, color.height_px
-            layer = PositionedLayer("silk", spec.x, spec.y, color_image=color)
+            layer = PositionedLayer(
+                "silk", spec.x, spec.y, spec.side, color_image=color
+            )
         if (spec.x + width_px > canvas_width_px + 1e-9
                 or spec.y + height_px > canvas_height_px + 1e-9):
             raise ValueError("Layer lies outside the canvas")
@@ -709,7 +727,10 @@ def convert_layers(
     solder_mask_color: str = "#ECEBE6",
 ) -> dict[str, Any]:
     layers = prepare_positioned_layers(specs, canvas_width_px, canvas_height_px)
-    physical_width = 50.0 if width_mm is None else width_mm
+    physical_width = (
+        canvas_width_px * 25.4 / DEFAULT_DPI
+        if width_mm is None else width_mm
+    )
     physical_height = (
         physical_width * canvas_height_px / canvas_width_px
         if height_mm is None else height_mm
@@ -726,10 +747,14 @@ def convert_layers(
     output_path = write_epro2(output, artifact)
     validation = validate_epro2(output_path)
     expected_layers: set[int] = set()
-    if any(layer.kind == "enig" for layer in layers):
+    if any(layer.kind == "enig" and layer.side == "front" for layer in layers):
         expected_layers.update((1, 5))
-    if any(layer.kind == "silk" for layer in layers):
+    if any(layer.kind == "enig" and layer.side == "back" for layer in layers):
+        expected_layers.update((2, 6))
+    if any(layer.kind == "silk" and layer.side == "front" for layer in layers):
         expected_layers.add(3)
+    if any(layer.kind == "silk" and layer.side == "back" for layer in layers):
+        expected_layers.add(4)
     if set(validation["artworkLayers"]) != expected_layers:
         raise ValueError("Generated project does not contain the expected artwork layers")
     return {
@@ -758,13 +783,14 @@ def read_manifest(path: str | Path) -> tuple[list[LayerSpec], dict[str, Any]]:
             kind = str(item["type"])
             x = float(item["x"])
             y = float(item["y"])
+            side = str(item.get("side", "front"))
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(
                 "Each manifest layer requires source, type, x, and y"
             ) from error
         if not source.is_absolute():
             source = manifest_path.parent / source
-        specs.append(LayerSpec(source, kind, x, y))
+        specs.append(LayerSpec(source, kind, x, y, side))
     canvas = data.get("canvas", {})
     if not isinstance(canvas, dict):
         raise ValueError("Manifest canvas must be an object")

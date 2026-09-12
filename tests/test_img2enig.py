@@ -77,12 +77,21 @@ class Img2EnigTests(unittest.TestCase):
                 "layers": [
                     {"source": enig.name, "type": "enig", "x": 1, "y": 2},
                     {"source": silk.name, "type": "silk", "x": 5, "y": 4},
+                    {"source": enig.name, "type": "enig", "side": "back",
+                     "x": 2, "y": 1},
+                    {"source": silk.name, "type": "silk", "side": "back",
+                     "x": 0, "y": 0},
                     {"source": "ignored.png", "type": "silk", "x": 0, "y": 0,
                      "visible": False},
                 ],
             }), encoding="utf-8")
             specs, settings = read_manifest(manifest)
-            self.assertEqual([item.source for item in specs], [enig, silk])
+            self.assertEqual(
+                [item.source for item in specs], [enig, silk, enig, silk]
+            )
+            self.assertEqual(
+                [item.side for item in specs], ["front", "front", "back", "back"]
+            )
             self.assertEqual(settings["canvas_width_px"], 10)
 
             output = Path(directory) / "layers.epro2"
@@ -94,7 +103,7 @@ class Img2EnigTests(unittest.TestCase):
             self.assertEqual((report["width_mm"], report["height_mm"]), (10.0, 8.0))
 
             records = self.read_records(output)
-            self.assertEqual(records["layers"], {1, 3, 5})
+            self.assertEqual(records["layers"], {1, 2, 3, 4, 5, 6})
             primitive_ids = [
                 outer["id"] for outer, _inner in records["all"]
                 if outer["type"] in {"FILL", "OBJ", "POLY"}
@@ -117,7 +126,9 @@ class Img2EnigTests(unittest.TestCase):
             }
             self.assertEqual(copper_boxes, {(2, 6, 3, 7), (5, 4, 6, 5)})
 
-            color_object = records["objects"][0]
+            color_object = next(
+                item for item in records["objects"] if item["layerId"] == 3
+            )
             self.assertAlmostEqual(color_object["startX"], 6 * scale)
             self.assertAlmostEqual(color_object["startY"], 2 * scale)
             self.assertAlmostEqual(color_object["width"], 4 * scale)
@@ -128,6 +139,12 @@ class Img2EnigTests(unittest.TestCase):
                 cv2.IMREAD_UNCHANGED,
             )
             self.assertEqual(decoded[1, 1].tolist(), [0, 255, 0, 192])
+
+            self.assertEqual(
+                {item["layerId"] for item in records["objects"]}, {3, 4}
+            )
+            self.assertTrue(any(fill["layerId"] == 2 for fill in records["fills"]))
+            self.assertTrue(any(fill["layerId"] == 6 for fill in records["fills"]))
 
             mask_colors = {
                 inner["activeColor"]
@@ -142,7 +159,8 @@ class Img2EnigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             enig = self.make_binary_image(directory)
             output = Path(directory) / "direct.epro2"
-            with redirect_stdout(io.StringIO()):
+            command_output = io.StringIO()
+            with redirect_stdout(command_output):
                 exit_code = main([
                     "--layer", str(enig), "enig", "2", "1",
                     "--canvas-width", "8",
@@ -151,6 +169,9 @@ class Img2EnigTests(unittest.TestCase):
                 ])
             self.assertEqual(exit_code, 0)
             self.assertTrue(output.is_file())
+            report = json.loads(command_output.getvalue())
+            self.assertAlmostEqual(report["width_mm"], 8 / 300 * 25.4)
+            self.assertAlmostEqual(report["height_mm"], 6 / 300 * 25.4)
             records = self.read_records(output)
             mask_colors = {
                 inner["activeColor"]

@@ -9,7 +9,8 @@
 
 int main(int argc, char* argv[]) {
 	QGuiApplication app(argc, argv);
-	QGuiApplication::setApplicationName("Image Binarizer");
+	QGuiApplication::setApplicationName("Nasti PCB Designer");
+	QGuiApplication::setApplicationDisplayName("Nasti PCB Designer");
 	QQuickStyle::setStyle("Fusion");
 	auto* images = new ImageStore;
 	Controller controller(images);

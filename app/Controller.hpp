@@ -41,6 +41,7 @@ class Controller : public QObject {
 	Q_PROPERTY(int canvasWidth READ canvasWidth NOTIFY changed)
 	Q_PROPERTY(int canvasHeight READ canvasHeight NOTIFY changed)
 	Q_PROPERTY(QString solderMaskColor READ solderMaskColor NOTIFY changed)
+	Q_PROPERTY(QString activeSide READ activeSide NOTIFY changed)
 public:
 	explicit Controller(ImageStore* images, QObject* parent = nullptr);
 	~Controller() override;
@@ -58,6 +59,7 @@ public:
 	int canvasWidth() const;
 	int canvasHeight() const;
 	QString solderMaskColor() const { return maskColor; }
+	QString activeSide() const { return activeSideValue; }
 	Q_INVOKABLE void compare(const QUrl& source, const QVariantMap& parameters);
 	Q_INVOKABLE void preview(const QUrl& source, const QVariantMap& parameters, int method);
 	Q_INVOKABLE QString localPath(const QUrl& url) const;
@@ -72,6 +74,7 @@ public:
 	Q_INVOKABLE void setLayerTopLeft(int index, double x, double y);
 	Q_INVOKABLE void setLayerCenter(int index, double x, double y);
 	Q_INVOKABLE void setSolderMaskColor(const QString& color);
+	Q_INVOKABLE void setActiveSide(const QString& side);
 	Q_INVOKABLE void apply(int index);
 	Q_INVOKABLE void cancel();
 	Q_INVOKABLE void invalidate();
@@ -85,6 +88,7 @@ private:
 		QString name;
 		QString sourcePath;
 		QString type = QStringLiteral("enig");
+		QString side = QStringLiteral("front");
 		bool visible = true;
 		double x = 0;
 		double y = 0;
@@ -100,6 +104,10 @@ private:
 	void finishPcb(QProcess* process, int exitCode, bool processFailed);
 	void loadSelectedLayer();
 	void refreshLayerPresentation();
+	void selectLayerForActiveSide();
+	int layerIndexById(int id) const;
+	int& selectedLayerIdForSide(const QString& side);
+	int selectedLayerIdForSide(const QString& side) const;
 	QSize layerSize(const ArtworkLayer& layer) const;
 	QSize canvasSize() const;
 	ImageStore* images;
@@ -114,6 +122,9 @@ private:
 	int minimumCanvasWidth = 0;
 	int minimumCanvasHeight = 0;
 	QString maskColor = QStringLiteral("white");
+	QString activeSideValue = QStringLiteral("front");
+	int frontSelectedLayerId = -1;
+	int backSelectedLayerId = -1;
 	cv::Mat sourceImage;
 	QImage output;
 	binarizer::Options settings;

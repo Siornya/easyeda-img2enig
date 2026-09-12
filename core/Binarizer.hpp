@@ -34,6 +34,6 @@ struct Options {
 };
 // Core has no Qt, Python or UI dependency. Input is uint8 gray/BGR/BGRA.
 cv::Mat preprocess(const cv::Mat& source, const Options& options);
-cv::Mat threshold(const cv::Mat& gray, const Options& options);
+cv::Mat threshold(const cv::Mat& gray, const Options& options, double* thresholdValue = nullptr);
 cv::Mat process(const cv::Mat& source, const Options& options);
 }
